@@ -30,9 +30,16 @@ sampler = rg.Sampler(
     deterministic_sampling=True           # greedy by default
 )
 
-# ── 5. generate a sentence ────────────────────────────────────────────────
+# # ── 5. generate a sentence ────────────────────────────────────────────────
+# out = sampler(
+#     ["One sentence about TPUs."],
+#     total_generation_steps=200,
+# )
+
+
 out = sampler(
-    ["One sentence about TPUs."],
-    total_generation_steps=64,
+    ["You are a formal theorem prover working with Lean 4. Your task is to complete the proof for the given theorem.\n\n## Example Pattern\nHere's how to approach Lean proofs:\n\n```lean\ntheorem example_add_zero (n : ℕ) : n + 0 = n := by\n  rfl  -- This works because n + 0 = n by definition\n```\n\n```lean\ntheorem example_succ (n : ℕ) : n + 1 = Nat.succ n := by\n  rfl  -- This works because + 1 is defined as Nat.succ\n```\n\n## Available Tactics\n- `rfl`: Use when goal is true by definition/reflexivity\n- `simp`: Simplify using standard lemmas\n- `rw [lemma_name]`: Rewrite using a specific lemma\n- `exact lemma_name`: Apply exact lemma that matches goal\n\n## Standard Library Lemmas\n- `Nat.add_comm : ∀ a b : ℕ, a + b = b + a`\n- `Nat.add_assoc : ∀ a b c : ℕ, (a + b) + c = a + (b + c)`\n- `Nat.zero_add : ∀ n : ℕ, 0 + n = n`\n- `Nat.add_zero : ∀ n : ℕ, n + 0 = n`\n\n## Your Task\nComplete this theorem by replacing `sorry` with the correct proof:\n\n```lean\ntheorem add_comm_simple (a b : ℕ) : a + b = b + a := by\n  sorry\n```\n\n## Instructions\n1. Look at the goal: `a + b = b + a`\n2. This is commutativity of addition\n3. Check if there's a standard library lemma that directly proves this\n4. Replace `sorry` with the appropriate tactic\n\n## Expected Format\nProvide only the complete theorem with the proof filled in:\n\n```lean\ntheorem add_comm_simple (a b : ℕ) : a + b = b + a := by\n  [your proof here]\n```\n\nYour proof:"],
+    total_generation_steps=1000,
 )
+
 print(out.text[0])
