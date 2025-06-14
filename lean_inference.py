@@ -49,7 +49,8 @@ class HeraldInferenceTester:
             model=self.model,
             vocab=self.vocab,
             params=self.params,
-            deterministic_sampling=True
+            deterministic_sampling=True,
+            is_it_model=True
         )
     
     def load_herald_examples(self, num_examples: int = 3):

@@ -1,16 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "capstone"
-version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+name            = "capstone"
+version         = "0.1.0"
+description     = "Add your description here"
+readme          = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "datasets",
-    "pandas",
-    "matplotlib",
-    "seaborn",
-    "recurrentgemma",
-    "flax",
-    "jax[tpu]"
+  "datasets",
+  "pandas",
+  "matplotlib",
+  "seaborn",
+  "recurrentgemma",
+  "flax",
+  "jax[tpu]"
 ]
 
+[tool.setuptools]
+# list each top-level .py (without the .py suffix)
+py-modules = [
+  "chat",
+  "download_dataset",
+  "inference",
+  "investigate_ds",
+  "lean_inference",
+  "main"
+]
