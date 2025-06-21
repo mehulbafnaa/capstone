@@ -15,7 +15,9 @@ dependencies = [
   "seaborn",
   "recurrentgemma",
   "flax",
-  "jax[tpu]"
+  "jax[tpu]",
+  "pydeps>=3.0.1",
+  "ruff>=0.11.13",
 ]
 
 [tool.setuptools]

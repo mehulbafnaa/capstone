@@ -10,8 +10,8 @@ import recurrentgemma.jax as rg
 import jax
 
 # 1. Paths to your local checkpoint and vocab
-CKPT_DIR = Path("2b").resolve()              # contains _METADATA, checkpoint/, etc.
-TOK_FILE = Path("tokenizer.model").resolve()  # SentencePiece vocab
+CKPT_DIR = Path("2b-it/2b-it").resolve()              # contains _METADATA, checkpoint/, etc.
+TOK_FILE = Path("2b-it/tokenizer.model").resolve()  # SentencePiece vocab
 
 # 2. Restore OCDBT weights
 restored = ocp.PyTreeCheckpointer().restore(str(CKPT_DIR))
@@ -25,7 +25,7 @@ cfg = rg.GriffinConfig.from_flax_params_or_variables(
 # 4. Build model, tokenizer, sampler
 model   = rg.Griffin(cfg)
 vocab   = spm.SentencePieceProcessor(model_file=str(TOK_FILE))
-sampler = rg.Sampler(model=model, vocab=vocab, params=params, deterministic_sampling=True)
+sampler = rg.Sampler(model=model, vocab=vocab, params=params, deterministic_sampling=True, is_it_model=True)
 
 # 5. Interactive loop
 print("RecurrentGemma REPL ready. Type 'exit' or Ctrl-D to quit.")
@@ -36,6 +36,6 @@ while True:
         break
     if not prompt or prompt.lower() in ("exit", "quit"):
         break
-    out = sampler([prompt], total_generation_steps=64)
+    out = sampler([prompt], total_generation_steps=10000)
     print(out.text[0])
 print("Goodbye!")
