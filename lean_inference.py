@@ -1,132 +1,123 @@
+
+
 #!/usr/bin/env python3
 """
-Herald Proofs Model Inference Test
+Lean Proofs Model Inference & Verification Script
 
-This script loads 3 examples from the Herald Proofs dataset and runs inference
-using the RecurrentGemma model to test performance on real mathematical proofs.
+This script loads examples from the Herald Proofs dataset, runs inference
+using a RecurrentGemma model, and then uses the Lean 4 compiler (via the
+'lake' build tool) to formally verify the correctness of the generated proof.
+
+It is designed to run from the root of the specific capstone project repository.
 """
 
+import subprocess
+import time
 from pathlib import Path
-from datasets import load_dataset
-import sentencepiece as spm
+
+import jax
 import orbax.checkpoint as ocp
 import recurrentgemma.jax as rg
-import jax
-import time
+import sentencepiece as spm
+from datasets import load_dataset
+
+# Get the absolute path of the directory containing this script (the repo root).
+# This makes all other paths robust and independent of the current working directory.
+SCRIPT_DIR = Path(__file__).parent.resolve()
 
 
 class HeraldInferenceTester:
     """
-    Test RecurrentGemma model on Herald Proofs dataset examples
+    Tests and verifies a RecurrentGemma model on Herald Proofs dataset examples.
+    This class is configured for the specific repository structure provided.
     """
-    
-    def __init__(self, ckpt_dir: str = "2b-it/2b-it", tok_file: str = "2b-it/tokenizer.model"):
-        """Initialize the model and tokenizer"""
+
+    def __init__(self):
+        """Initialize the model and tokenizer using paths relative to the script."""
         print("Initializing RecurrentGemma model...")
-        
-        # File paths
-        self.ckpt_dir = Path(ckpt_dir).resolve()
-        self.tok_file = Path(tok_file).resolve()
-        
-        # Load model
+
+        self.repo_root = SCRIPT_DIR
+        self.ckpt_dir = self.repo_root / "2b-it" / "2b-it"
+        self.tok_file = self.repo_root / "2b-it" / "tokenizer.model"
+        self.lean_project_path = self.repo_root / "lean_verifier"
+
+        # The source code directory inside the Lean project is "LeanVerifier" (capitalized).
+        # We must point to it directly.
+        self.lean_src_path = self.lean_project_path / "LeanVerifier"
+
+        # Verify that necessary files and directories exist before proceeding.
+        if not self.ckpt_dir.exists():
+            raise FileNotFoundError(f"Checkpoint directory not found at: {self.ckpt_dir}")
+        if not self.tok_file.exists():
+            raise FileNotFoundError(f"Tokenizer file not found at: {self.tok_file}")
+        if not self.lean_src_path.exists():
+            raise FileNotFoundError(f"Lean source directory not found at: {self.lean_src_path}")
+
+        # Load the model and tokenizer.
         self._load_model()
         print("Model loaded successfully!")
-        
+
     def _load_model(self):
-        """Load the RecurrentGemma model and tokenizer"""
-        # Restore weights
+        """Load the RecurrentGemma model, parameters, and tokenizer."""
         restored = ocp.PyTreeCheckpointer().restore(str(self.ckpt_dir))
         self.params = restored.get("params", restored)
-        
-        # Configure model
         preset = rg.Preset.RECURRENT_GEMMA_2B_V1
         cfg = rg.GriffinConfig.from_flax_params_or_variables(self.params, preset=preset)
-        
-        # Initialize components
         self.model = rg.Griffin(cfg)
         self.vocab = spm.SentencePieceProcessor(model_file=str(self.tok_file))
         self.sampler = rg.Sampler(
             model=self.model,
             vocab=self.vocab,
             params=self.params,
-            deterministic_sampling=True,
+            deterministic_sampling=True, # Use deterministic sampling for reproducible results.
             is_it_model=True
         )
-    
+
     def load_herald_examples(self, num_examples: int = 3):
-        """Load examples from Herald Proofs dataset"""
-        print(f"Loading {num_examples} examples from Herald Proofs dataset...")
-        
+        """Load a specified number of random examples from the Herald Proofs dataset."""
+        print(f"Loading {num_examples} examples from FrenzyMath/Herald_proofs dataset...")
         try:
+            # Shuffle the dataset and take the first few examples for variety on each run.
             dataset = load_dataset("FrenzyMath/Herald_proofs", split="train", trust_remote_code=True)
-            
-            # Convert to pandas for easier manipulation
-            df = dataset.to_pandas()
-            
-            # Select diverse examples - let's pick some with different proof lengths
-            df['formal_proof_len'] = df['formal_proof'].str.len()
-            
-            # Get examples: short, medium, and longer proof
-            short_idx = df[df['formal_proof_len'] < 100].index[0] if len(df[df['formal_proof_len'] < 100]) > 0 else 0
-            medium_idx = df[(df['formal_proof_len'] >= 100) & (df['formal_proof_len'] < 300)].index[0] if len(df[(df['formal_proof_len'] >= 100) & (df['formal_proof_len'] < 300)]) > 0 else 1
-            long_idx = df[df['formal_proof_len'] >= 300].index[0] if len(df[df['formal_proof_len'] >= 300]) > 0 else 2
-            
-            selected_indices = [short_idx, medium_idx, long_idx][:num_examples]
+            df = dataset.to_pandas().sample(frac=1).reset_index(drop=True)
+            examples_data = df.head(num_examples)
+
             examples = []
-            
-            for i, idx in enumerate(selected_indices):
-                example = df.iloc[idx]
-                examples.append({
-                    'index': idx,
-                    'id': example['id'],
-                    'name': example['name'],
-                    'header': example['header'],
-                    'informal_theorem': example['informal_theorem'],
-                    'formal_theorem': example['formal_theorem'],
-                    'formal_proof': example['formal_proof'],
-                    'informal_proof': example['informal_proof'],
-                    'proof_length': len(example['formal_proof'])
-                })
-                print(f"  Example {i+1}: '{example['name']}' (proof length: {len(example['formal_proof'])} chars)")
-            
+            for i, row in examples_data.iterrows():
+                example = row.to_dict()
+                print(f"  Selected Example {i+1}: '{example['name']}'")
+                examples.append(example)
             return examples
-            
         except Exception as e:
             print(f"Error loading dataset: {e}")
             return []
-    
-    def create_prompt(self, example):
-        """Create a prompt for the model based on Herald dataset example"""
-        
+
+    def create_prompt(self, example: dict) -> str:
+        """Create a standardized prompt for the model based on a dataset example."""
         prompt = f"""Complete the following Lean 4 theorem proof by replacing 'sorry' with the actual proof tactics.
 
 {example['header']}
 
 {example['formal_theorem']} := by
   sorry"""
-        
         return prompt
-    
-    def run_inference(self, prompt: str, max_steps: int = 1000):
-        """Run inference on a single prompt"""
+
+    def run_inference(self, prompt: str, max_steps: int = 1000) -> dict:
+        """Run inference on a single prompt and time the operation."""
         print("Running inference...")
         start_time = time.time()
-        
         try:
             result = self.sampler(
                 [prompt],
                 total_generation_steps=max_steps
             )
-            
             inference_time = time.time() - start_time
-            generated_text = result.text[0]
-            
+            # The model is expected to return the full code, including the prompt.
             return {
                 'success': True,
-                'generated_text': generated_text,
+                'generated_text': result.text[0],
                 'inference_time': inference_time
             }
-            
         except Exception as e:
             return {
                 'success': False,
@@ -134,234 +125,195 @@ class HeraldInferenceTester:
                 'inference_time': time.time() - start_time
             }
     
-    def extract_proof_from_output(self, output_text: str, original_theorem: str):
-        """Extract the proof portion from model output"""
-        # The model should complete the theorem, so we need to extract everything after ":= by"
-        lines = output_text.split('\n')
+
+    # def verify_with_lean_compiler(self, full_code: str, example_name: str) -> dict:
+    #     """
+    #     Writes the generated Lean code to a file and uses 'lake build' to verify it.
+    #     """
+    #     # Sanitize the example name to be a valid file name.
+    #     safe_filename = "".join(c if c.isalnum() else "_" for c in example_name)
+    #     temp_lean_file = self.lean_src_path / f"test_{safe_filename}.lean"
+
+    #     try:
+    #         # Write the generated code to a .lean file inside the project.
+    #         temp_lean_file.write_text(full_code, encoding='utf-8')
+    #         print(f"Verifying with Lean compiler by running 'lake build' in {self.lean_project_path}...")
+
+    #         # Execute 'lake build' from within the project directory.
+    #         proc = subprocess.run(
+    #             ['lake', 'build'],
+    #             cwd=self.lean_project_path,
+    #             capture_output=True,
+    #             text=True,
+    #             timeout=120  # Add a 2-minute timeout to prevent hangs.
+    #         )
+
+    #         # Check the result of the compilation.
+    #         if proc.returncode == 0:
+    #             print("✅ Verification successful: Proof is correct!")
+    #             return {'verified': True, 'output': proc.stdout}
+    #         else:
+    #             print("❌ Verification failed: Proof contains errors.")
+    #             # The compiler error message is highly informative for debugging.
+    #             return {'verified': False, 'output': proc.stderr}
+
+    #     except subprocess.TimeoutExpired:
+    #         print("❌ Verification timed out.")
+    #         return {'verified': False, 'output': 'Compiler verification timed out.'}
+    #     except Exception as e:
+    #         print(f"An error occurred during verification: {e}")
+    #         return {'verified': False, 'output': str(e)}
+    #     finally:
+    #         # Clean up by removing the temporary file.
+    #         if temp_lean_file.exists():
+    #             temp_lean_file.unlink()
+
+
+    def verify_with_lean_compiler(self, full_code: str, example_name: str) -> dict:
+        """
+        Writes the generated Lean code to a file and uses 'lake build' to verify it.
         
-        # Find where the actual proof starts (after ":= by")
-        proof_lines = []
-        found_by = False
+        This version includes a critical check to ensure the proof does not use the
+        'sorry' tactic, which would result in a false positive during compilation.
+        """
+        # --- Start of the refactored section ---
+
+        # Step 1: Check for 'sorry' in the proof part of the generated code.
+        # We split the code at ':= by' and check only the part that should be the proof.
+        # This prevents false negatives if the word 'sorry' appears in a comment before the proof.
+        proof_block = full_code.split(':= by', 1)[-1]
+        if 'sorry' in proof_block:
+            print("❌ Verification failed: Model used the 'sorry' tactic in its proof.")
+            return {'verified': False, 'output': "Proof attempt used 'sorry'."}
+
+        # --- End of the refactored section ---
+
+        # Step 2: Proceed with compilation only if the proof is not using 'sorry'.
         
-        for line in lines:
-            if ':= by' in line and not found_by:
-                found_by = True
-                # Check if there's content after ":= by" on the same line
-                by_index = line.find(':= by')
-                after_by = line[by_index + 5:].strip()
-                if after_by and after_by != 'sorry':
-                    proof_lines.append(after_by)
-                continue
-            elif found_by and line.strip():
-                # Skip lines that are just template remnants
-                if 'sorry' not in line.strip() and '[your proof here]' not in line.strip():
-                    proof_lines.append(line.strip())
-        
-        # If we found proof lines, return them
-        if proof_lines:
-            return '\n  '.join(proof_lines)
-        
-        # Fallback: look for the complete theorem in output
-        if ':= by' in output_text:
-            # Extract everything after the first ":= by"
-            by_split = output_text.split(':= by', 1)
-            if len(by_split) > 1:
-                after_by = by_split[1].strip()
-                # Clean up the proof part
-                proof_lines = []
-                for line in after_by.split('\n'):
-                    line = line.strip()
-                    if line and 'sorry' not in line and '[your proof here]' not in line:
-                        proof_lines.append(line)
-                if proof_lines:
-                    return '\n  '.join(proof_lines)
-        
-        # If nothing found, return indication that no proof was generated
-        return "No valid proof generated"
-    
-    def evaluate_example(self, example, generated_proof, ground_truth):
-        """Simple evaluation of generated vs ground truth proof"""
-        # Basic similarity checks
-        generated_clean = generated_proof.replace(' ', '').replace('\n', '').lower()
-        ground_truth_clean = ground_truth.replace(' ', '').replace('\n', '').lower()
-        
-        exact_match = generated_clean == ground_truth_clean
-        
-        # Check if key tactics are present
-        ground_truth_tactics = set()
-        for tactic in ['rfl', 'simp', 'rw', 'exact', 'apply', 'intro', 'cases', 'induction']:
-            if tactic in ground_truth.lower():
-                ground_truth_tactics.add(tactic)
-        
-        generated_tactics = set()
-        for tactic in ['rfl', 'simp', 'rw', 'exact', 'apply', 'intro', 'cases', 'induction']:
-            if tactic in generated_proof.lower():
-                generated_tactics.add(tactic)
-        
-        tactic_overlap = len(ground_truth_tactics.intersection(generated_tactics))
-        tactic_total = len(ground_truth_tactics) if ground_truth_tactics else 1
-        
-        return {
-            'exact_match': exact_match,
-            'tactic_similarity': tactic_overlap / tactic_total,
-            'ground_truth_tactics': ground_truth_tactics,
-            'generated_tactics': generated_tactics
-        }
-    
+        # Sanitize the example name to be a valid file name.
+        safe_filename = "".join(c if c.isalnum() else "_" for c in example_name)
+        temp_lean_file = self.lean_src_path / f"test_{safe_filename}.lean"
+
+        try:
+            # Write the generated code to a .lean file inside the project.
+            temp_lean_file.write_text(full_code, encoding='utf-8')
+            print(f"Verifying with Lean compiler by running 'lake build' in {self.lean_project_path}...")
+
+            # Execute 'lake build' from within the project directory.
+            proc = subprocess.run(
+                ['lake', 'build'],
+                cwd=self.lean_project_path,
+                capture_output=True,
+                text=True,
+                timeout=120  # Add a 2-minute timeout to prevent hangs.
+            )
+
+            # Check the result of the compilation.
+            if proc.returncode == 0:
+                print("✅ Verification successful: Proof is correct and does not use 'sorry'!")
+                return {'verified': True, 'output': proc.stdout}
+            else:
+                print("❌ Verification failed: Proof contains compilation errors.")
+                # The compiler error message is highly informative for debugging.
+                return {'verified': False, 'output': proc.stderr}
+
+        except subprocess.TimeoutExpired:
+            print("❌ Verification timed out.")
+            return {'verified': False, 'output': 'Compiler verification timed out.'}
+        except Exception as e:
+            print(f"An error occurred during verification: {e}")
+            return {'verified': False, 'output': str(e)}
+        finally:
+            # Clean up by removing the temporary file.
+            if temp_lean_file.exists():
+                temp_lean_file.unlink()
+
     def run_test_suite(self):
-        """Run the complete test suite on Herald examples"""
-        print("Starting Herald Proofs inference test suite...")
+        """Run the complete test suite: load, infer, verify, and report."""
+        print("\n" + "=" * 80)
+        print("Starting Herald Proofs Inference & Verification Test Suite")
         print("=" * 80)
-        
-        # Load examples
+
         examples = self.load_herald_examples(3)
         if not examples:
             print("No examples loaded. Exiting.")
             return
-        
+
         results = []
-        
         for i, example in enumerate(examples, 1):
-            print(f"\nEXAMPLE {i}/3: {example['name']}")
-            print("-" * 60)
-            print(f"Theorem: {example['formal_theorem'][:100]}...")
-            print(f"Ground truth proof length: {example['proof_length']} characters")
-            
-            # Create prompt
+            print(f"\n--- EXAMPLE {i}/{len(examples)}: {example['name']} ---")
+
             prompt = self.create_prompt(example)
-            
-            # Run inference
             inference_result = self.run_inference(prompt)
-            
+
             if inference_result['success']:
                 generated_text = inference_result['generated_text']
-                generated_proof = self.extract_proof_from_output(generated_text, example['formal_theorem'])
-                
-                # Evaluate
-                evaluation = self.evaluate_example(
-                    example, 
-                    generated_proof, 
-                    example['formal_proof']
-                )
-                
                 print(f"Inference completed in {inference_result['inference_time']:.2f}s")
-                print(f"Generated proof length: {len(generated_proof)} characters")
-                print(f"Exact match: {evaluation['exact_match']}")
-                print(f"Tactic similarity: {evaluation['tactic_similarity']:.2f}")
-                
-                print(f"\nFull Generated Output:")
-                print("-" * 40)
-                print(generated_text[:500] + "..." if len(generated_text) > 500 else generated_text)
-                print("-" * 40)
-                
-                print(f"\nExtracted Proof:")
-                print("-" * 40)
-                print(generated_proof)
-                print("-" * 40)
-                
-                print(f"\nGround Truth:")
-                print("-" * 40)
-                print(example['formal_proof'])
-                print("-" * 40)
-                
-                result = {
+
+                # Verify the complete generated code with the Lean compiler.
+                verification_result = self.verify_with_lean_compiler(generated_text, example['name'])
+
+                print(f"\n--- Ground Truth Proof ---\n{example['formal_proof']}\n------------------------")
+                print(f"\n--- Generated Full Output ---\n{generated_text}\n---------------------------")
+
+                if not verification_result['verified']:
+                    print(f"\n--- Compiler Errors ---\n{verification_result['output']}\n-----------------------")
+
+                result_data = {
                     'example': example,
-                    'prompt': prompt,
                     'generated_text': generated_text,
-                    'generated_proof': generated_proof,
-                    'evaluation': evaluation,
+                    'verified': verification_result['verified'],
+                    'compiler_output': verification_result['output'],
                     'inference_time': inference_result['inference_time']
                 }
-                
             else:
                 print(f"Inference failed: {inference_result['error']}")
-                result = {
-                    'example': example,
-                    'error': inference_result['error'],
-                    'inference_time': inference_result['inference_time']
-                }
-            
-            results.append(result)
+                result_data = {'example': example, 'error': inference_result['error']}
+
+            results.append(result_data)
             print("-" * 60)
-        
-        # Summary
+
         self._print_summary(results)
-        return results
-    
-    def _print_summary(self, results):
-        """Print summary of all test results"""
+
+    def _print_summary(self, results: list):
+        """Print a final summary of all test results."""
         print("\n" + "=" * 80)
-        print("TEST SUITE SUMMARY")
+        print("TEST SUITE SUMMARY (with Lean Compiler Verification)")
         print("=" * 80)
-        
-        successful_runs = [r for r in results if 'generated_proof' in r]
-        failed_runs = [r for r in results if 'error' in r]
-        
-        print(f"Successful inferences: {len(successful_runs)}/3")
-        print(f"Failed inferences: {len(failed_runs)}/3")
-        
+
+        successful_runs = [r for r in results if 'verified' in r]
+        verified_runs = [r for r in successful_runs if r['verified']]
+
+        print(f"Total examples tested: {len(results)}")
+        print(f"Successfully generated and verified proofs: {len(verified_runs)}/{len(successful_runs)}")
+
         if successful_runs:
             avg_time = sum(r['inference_time'] for r in successful_runs) / len(successful_runs)
-            exact_matches = sum(1 for r in successful_runs if r['evaluation']['exact_match'])
-            avg_tactic_sim = sum(r['evaluation']['tactic_similarity'] for r in successful_runs) / len(successful_runs)
-            
             print(f"Average inference time: {avg_time:.2f}s")
-            print(f"Exact matches: {exact_matches}/{len(successful_runs)}")
-            print(f"Average tactic similarity: {avg_tactic_sim:.2f}")
-        
+
         print("\nIndividual Results:")
         for i, result in enumerate(results, 1):
             example_name = result['example']['name']
-            if 'generated_proof' in result:
-                match_status = "EXACT" if result['evaluation']['exact_match'] else "PARTIAL"
-                print(f"  {i}. {example_name}: {match_status} (similarity: {result['evaluation']['tactic_similarity']:.2f})")
+            if 'verified' in result:
+                status = "✅ VERIFIED" if result['verified'] else "❌ FAILED"
+                print(f"  {i}. {example_name}: {status}")
             else:
-                print(f"  {i}. {example_name}: FAILED")
-        
+                print(f"  {i}. {example_name}: INFERENCE_ERROR")
+
         print("=" * 80)
 
 
 def main():
-    """Main execution function"""
+    """Main execution function for the script."""
     try:
-        # Initialize tester
         tester = HeraldInferenceTester()
-        
-        # Run test suite
-        results = tester.run_test_suite()
-        
-        # Optionally save results
-        print("\nSave detailed results to file? (y/n): ", end="")
-        if input().lower().startswith('y'):
-            import json
-            with open('herald_inference_results.json', 'w') as f:
-                # Convert results to JSON-serializable format
-                json_results = []
-                for r in results:
-                    json_result = {
-                        'example_name': r['example']['name'],
-                        'example_id': r['example']['id'],
-                        'inference_time': r.get('inference_time', 0),
-                    }
-                    if 'generated_proof' in r:
-                        json_result.update({
-                            'generated_proof': r['generated_proof'],
-                            'exact_match': r['evaluation']['exact_match'],
-                            'tactic_similarity': r['evaluation']['tactic_similarity']
-                        })
-                    else:
-                        json_result['error'] = r.get('error', 'Unknown error')
-                    json_results.append(json_result)
-                
-                json.dump(json_results, f, indent=2)
-            print("Results saved to 'herald_inference_results.json'")
-        
+        tester.run_test_suite()
         print("\nTest suite completed!")
-        
     except Exception as e:
-        print(f"Fatal error: {e}")
+        print(f"\nA fatal error occurred in main: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
-    
     return 0
 
 
