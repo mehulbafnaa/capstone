@@ -1,0 +1,10 @@
+name = "lean_verifier"
+version = "0.1.0"
+defaultTargets = ["lean_verifier"]
+
+[[lean_lib]]
+name = "LeanVerifier"
+
+[[lean_exe]]
+name = "lean_verifier"
+root = "Main"
