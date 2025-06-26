@@ -209,6 +209,15 @@ def main():
     # Suppress the noisy JAX warning to keep the tqdm bar clean
 
     jax.distributed.initialize()
+
+    if jax.process_index() == 0:
+        print("=" * 80)
+        print("JAX DISTRIBUTED SYSTEM INITIALIZED SUCESSFULLY")
+        print(f"   Total processes:      {jax.process_count()}")
+        print(f"   Current process ID:   {jax.process_index()}")
+        print(f"   Total devices found:  {jax.device_count()}")
+        print(f"   Local devices on this host: {jax.local_device_count()}")
+        print("=" * 80)
     warnings.filterwarnings("ignore", message="Some donated buffers were not usable:")
 
     # --- Configuration ---
