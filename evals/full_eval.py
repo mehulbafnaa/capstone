@@ -19,6 +19,8 @@ import recurrentgemma.jax as rg
 import sentencepiece as spm
 from datasets import load_dataset
 
+jax.distributed.initialize()
+
 REPO_ROOT = Path(__file__).parent.parent.resolve()
 
 

@@ -19,7 +19,6 @@ from pathlib import Path
 import csv
 from tqdm import tqdm
 import warnings
-
 import jax
 import orbax.checkpoint as ocp
 import recurrentgemma.jax as rg
@@ -208,6 +207,8 @@ class HeraldInferenceTester:
 def main():
     """Main execution function to configure and run the experiment."""
     # Suppress the noisy JAX warning to keep the tqdm bar clean
+
+    jax.distributed.initialize()
     warnings.filterwarnings("ignore", message="Some donated buffers were not usable:")
 
     # --- Configuration ---
