@@ -1,7 +1,7 @@
 from pathlib import Path
 
 # Base directory for the repository (assuming script is run from repo root or a subdirectory)
-REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
+REPO_ROOT = Path(__file__).parent.parent.resolve()
 
 # Model and Tokenizer Paths (consistent with inference.py)
 CKPT_DIR = REPO_ROOT / "2b-it" / "2b-it"
