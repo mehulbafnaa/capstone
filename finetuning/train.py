@@ -62,7 +62,8 @@ def train_step(state, batch, dropout_rng):
     """
     Performs a single training step.
     """
-    
+    # Split the dropout_rng for each device
+    dropout_rng = jax.random.fold_in(dropout_rng, jax.lax.axis_index('batch'))
 
     def loss_fn(params):
         # Model application with training=True for dropout etc.
@@ -128,7 +129,7 @@ def main():
             local_device_count = jax.local_device_count()
             batch = jax.tree.map(lambda x: x.reshape(local_device_count, x.shape[0] // local_device_count, *x.shape[1:]), batch)
             
-            p_train_state, loss = jax.pmap(train_step, axis_name="batch", in_axes=(0, 0, 0))(p_train_state, batch, jax.random.split(dropout_rng, jax.local_device_count()))
+            p_train_state, loss = jax.pmap(train_step, axis_name="batch", in_axes=(0, 0, None))(p_train_state, batch, dropout_rng)
 
             if jax.process_index() == 0:
                 pbar.set_postfix(loss=f"{loss.mean():.4f}")
