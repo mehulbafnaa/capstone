@@ -71,7 +71,6 @@ def train_step(state, batch, dropout_rng):
             {"params": params},
             batch["input_ids"],
             segment_pos=batch["segment_pos"],
-            train=True,
             rngs={"dropout": dropout_rng}
         ).logits
         
