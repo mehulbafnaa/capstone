@@ -8,16 +8,14 @@ from finetuning.config import TOK_FILE, MAX_SEQ_LEN
 vocab = spm.SentencePieceProcessor(model_file=str(TOK_FILE))
 
 def tokenize_function(examples):
-    # Combine header, formal_theorem, and formal_proof into a single text for tokenization
-    # The model will learn to generate the formal_proof given the header and formal_theorem
-    # We will use a specific prompt format for finetuning
+    # The model will learn to generate the formal_proof given the header and formal_theorem.
+    # We use a standard causal language modeling setup.
 
-    # Input for the model: <BOS> prompt + header + formal_theorem <EOS>
-    # Target for the model: <BOS> prompt + header + formal_theorem + formal_proof <EOS>
+    # The input to the model is the full sequence:
+    # <BOS> prompt + header + formal_theorem + formal_proof <EOS>
+    # The labels are the same sequence, but with the prompt part masked out.
     # The loss will be computed only on the formal_proof part.
 
-    # Construct the prompt for the model to complete the proof
-    # This format should ideally match the evaluation prompt format
     prompts = []
     targets = []
     for i in range(len(examples["header"])):
@@ -25,18 +23,18 @@ def tokenize_function(examples):
         formal_theorem = examples["formal_theorem"][i]
         formal_proof = examples["formal_proof"][i]
 
-        # Input for the model (what it sees before generating)
-        prompt_input = f"Complete the following Lean 4 theorem proof:\n\n{header}\n\n{formal_theorem} := by\n  "
+        # This is the part of the sequence that the model sees, but for which loss is not calculated.
+        prompt_section = f"Complete the following Lean 4 theorem proof:\n\n{header}\n\n{formal_theorem} := by\n  "
         
-        # Full sequence for target (what the model should output, including the input part)
-        full_target_text = f"Complete the following Lean 4 theorem proof:\n\n{header}\n\n{formal_theorem} := by\n  {formal_proof}"
+        # This is the full sequence for both input and target.
+        full_target_text = f"{prompt_section}{formal_proof}"
 
-        prompts.append(prompt_input)
+        prompts.append(prompt_section)
         targets.append(full_target_text)
 
-    # Tokenize prompts and targets
-    # Add BOS and EOS tokens
-    tokenized_prompts = vocab.encode(prompts, add_bos=True, add_eos=True)
+    # Tokenize prompts and targets.
+    # The prompt does NOT get an EOS token. The target does.
+    tokenized_prompts = vocab.encode(prompts, add_bos=True, add_eos=False)
     tokenized_targets = vocab.encode(targets, add_bos=True, add_eos=True)
 
     input_ids = []
@@ -48,30 +46,36 @@ def tokenize_function(examples):
         prompt_ids = tokenized_prompts[i]
         target_ids = tokenized_targets[i]
 
-        # Ensure target_ids starts with prompt_ids
+        # After fixing the tokenization, this check should pass.
         if not target_ids[:len(prompt_ids)] == prompt_ids:
-            # This should ideally not happen if prompt_input is a prefix of full_target_text
-            # Handle cases where it might, e.g., by re-encoding or skipping
             print(f"Warning: Prompt IDs not a prefix of Target IDs for example {i}. Skipping.")
             continue
 
-        # Truncate if necessary
+        # Truncate the full target sequence if it's too long.
         if len(target_ids) > MAX_SEQ_LEN:
             target_ids = target_ids[:MAX_SEQ_LEN]
-            prompt_ids = prompt_ids[:MAX_SEQ_LEN] # Ensure prompt is also truncated consistently
+        
+        # If the prompt is longer than the truncated target, truncate the prompt as well.
+        if len(prompt_ids) > len(target_ids):
+            prompt_ids = prompt_ids[:len(target_ids)]
 
-        # Pad to MAX_SEQ_LEN
-        padded_input_ids = prompt_ids + [0] * (MAX_SEQ_LEN - len(prompt_ids))
-        padded_labels = target_ids + [0] * (MAX_SEQ_LEN - len(target_ids))
-        padded_attention_mask = [1] * len(prompt_ids) + [0] * (MAX_SEQ_LEN - len(prompt_ids))
-        padded_segment_pos = list(range(len(prompt_ids))) + [0] * (MAX_SEQ_LEN - len(prompt_ids))
+        # The model's input is the entire tokenized target sequence.
+        current_input_ids = target_ids
+        # The labels are a copy, which we'll modify by masking the prompt.
+        current_labels = list(target_ids)
 
-        # For causal language modeling, labels for the input part are usually ignored (-100)
-        # and only the generated part contributes to the loss.
-        # Here, we set labels for the prompt part to -100 so they are ignored in loss calculation.
+        # Mask out the prompt tokens in the labels by setting them to -100.
         for j in range(len(prompt_ids)):
-            if j < len(prompt_ids):
-                padded_labels[j] = -100
+            current_labels[j] = -100
+
+        # Pad all sequences to MAX_SEQ_LEN.
+        pad_len = MAX_SEQ_LEN - len(current_input_ids)
+        
+        padded_input_ids = current_input_ids + [0] * pad_len
+        # Pad labels with -100 so they are ignored in loss calculation.
+        padded_labels = current_labels + [-100] * pad_len
+        padded_attention_mask = [1] * len(current_input_ids) + [0] * pad_len
+        padded_segment_pos = list(range(len(current_input_ids))) + [0] * pad_len
 
         input_ids.append(padded_input_ids)
         labels.append(padded_labels)
@@ -88,21 +92,18 @@ def tokenize_function(examples):
 def get_dataset(dataset_name: str, split: str, batch_size: int, shuffle: bool = True):
     dataset = load_dataset(dataset_name, split=split, trust_remote_code=True)
     
-    # Map the tokenization function over the dataset
-    # Use batched=True to process multiple examples at once for efficiency
     tokenized_dataset = dataset.map(
         tokenize_function,
         batched=True,
         remove_columns=dataset.column_names,
-        load_from_cache_file=False # Set to True for faster subsequent runs
+        load_from_cache_file=False
     )
 
-    # Convert to TensorFlow dataset
     tf_dataset = tokenized_dataset.to_tf_dataset(
         columns=["input_ids", "labels", "attention_mask", "segment_pos"],
         collate_fn=tf.data.DefaultAttrs(
             batch_size=batch_size,
-            drop_remainder=True, # Important for pmap
+            drop_remainder=True,
             output_signature={
                 "input_ids": tf.TensorSpec(shape=(None, MAX_SEQ_LEN), dtype=tf.int32),
                 "labels": tf.TensorSpec(shape=(None, MAX_SEQ_LEN), dtype=tf.int32),
@@ -113,7 +114,7 @@ def get_dataset(dataset_name: str, split: str, batch_size: int, shuffle: bool = 
     )
 
     if shuffle:
-        tf_dataset = tf_dataset.shuffle(buffer_size=1000) # Adjust buffer_size as needed
+        tf_dataset = tf_dataset.shuffle(buffer_size=1000)
 
     tf_dataset = tf_dataset.prefetch(tf.data.AUTOTUNE)
     return tf_dataset
@@ -125,24 +126,23 @@ if __name__ == "__main__":
     
     for batch in train_dataset.take(1):
         print("\nSample Batch:")
-        print(f"input_ids shape: {batch["input_ids"].shape}")
-        print(f"labels shape: {batch["labels"].shape}")
-        print(f"attention_mask shape: {batch["attention_mask"].shape}")
+        print(f"input_ids shape: {batch['input_ids'].shape}")
+        print(f"labels shape: {batch['labels'].shape}")
+        print(f"attention_mask shape: {batch['attention_mask'].shape}")
         print(f"segment_pos shape: {batch['segment_pos'].shape}")
-        print("\nFirst example input_ids:")
-        print(batch["input_ids"][0].numpy().tolist())
-        print("\nFirst example labels (masked prompt tokens are -100):")
-        print(batch["labels"][0].numpy().tolist())
-        print("\nFirst example attention_mask:")
-        print(batch["attention_mask"][0].numpy().tolist())
-        print("\nFirst example segment_pos:")
-        print(batch["segment_pos"][0].numpy().tolist())
-
-        # Decode a part of the input_ids to verify
+        
+        # Find first non-masked label to decode for verification
+        first_real_label_idx = -1
+        for i, label in enumerate(batch["labels"][0].numpy()):
+            if label != -100:
+                first_real_label_idx = i
+                break
+        
+        print(f"\nPrompt length (masked labels): {first_real_label_idx}")
+        
         decoded_input = vocab.decode(batch["input_ids"][0].numpy().tolist(), skip_special_tokens=False)
         print("\nDecoded input (first example):\n", decoded_input)
 
-        # Decode the generated part (where labels are not -100)
         decoded_labels = vocab.decode([token for token in batch["labels"][0].numpy().tolist() if token != -100], skip_special_tokens=False)
         print("\nDecoded target (first example, proof part):\n", decoded_labels)
 
