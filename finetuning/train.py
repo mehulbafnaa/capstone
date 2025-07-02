@@ -62,8 +62,7 @@ def train_step(state, batch, dropout_rng):
     """
     Performs a single training step.
     """
-    # Split the dropout_rng for each device
-    dropout_rng = jax.random.fold_in(dropout_rng, jax.lax.axis_index('batch'))
+    
 
     def loss_fn(params):
         # Model application with training=True for dropout etc.
