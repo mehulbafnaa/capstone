@@ -124,8 +124,10 @@ def main():
             pbar = train_dataset
 
         for step, batch in enumerate(pbar):
-            batch = jax.tree.map(lambda x: jnp.array(x), batch)
-            batch = jax.tree.map(lambda x: jax.lax.broadcast(x, (jax.local_device_count(),)), batch)
+            batch = jax.tree.map(lambda x: x.numpy(), batch) # Convert TF tensors to NumPy arrays
+            batch = jax.tree.map(lambda x: jnp.array(x), batch) # Convert NumPy arrays to JAX arrays
+            local_device_count = jax.local_device_count()
+            batch = jax.tree.map(lambda x: x.reshape(local_device_count, x.shape[0] // local_device_count, *x.shape[1:]), batch)
             
             p_train_state, loss = jax.pmap(train_step, axis_name="batch", in_axes=(0, 0, 0))(p_train_state, batch, jax.random.split(dropout_rng, jax.local_device_count()))
 
