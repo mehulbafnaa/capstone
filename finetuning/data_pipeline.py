@@ -42,6 +42,7 @@ def tokenize_function(examples):
     input_ids = []
     labels = []
     attention_mask = []
+    segment_pos = []
 
     for i in range(len(tokenized_prompts)):
         prompt_ids = tokenized_prompts[i]
@@ -63,6 +64,7 @@ def tokenize_function(examples):
         padded_input_ids = prompt_ids + [0] * (MAX_SEQ_LEN - len(prompt_ids))
         padded_labels = target_ids + [0] * (MAX_SEQ_LEN - len(target_ids))
         padded_attention_mask = [1] * len(prompt_ids) + [0] * (MAX_SEQ_LEN - len(prompt_ids))
+        padded_segment_pos = list(range(len(prompt_ids))) + [0] * (MAX_SEQ_LEN - len(prompt_ids))
 
         # For causal language modeling, labels for the input part are usually ignored (-100)
         # and only the generated part contributes to the loss.
@@ -74,11 +76,13 @@ def tokenize_function(examples):
         input_ids.append(padded_input_ids)
         labels.append(padded_labels)
         attention_mask.append(padded_attention_mask)
+        segment_pos.append(padded_segment_pos)
 
     return {
         "input_ids": input_ids,
         "labels": labels,
-        "attention_mask": attention_mask
+        "attention_mask": attention_mask,
+        "segment_pos": segment_pos
     }
 
 def get_dataset(dataset_name: str, split: str, batch_size: int, shuffle: bool = True):
@@ -95,7 +99,7 @@ def get_dataset(dataset_name: str, split: str, batch_size: int, shuffle: bool = 
 
     # Convert to TensorFlow dataset
     tf_dataset = tokenized_dataset.to_tf_dataset(
-        columns=["input_ids", "labels", "attention_mask"],
+        columns=["input_ids", "labels", "attention_mask", "segment_pos"],
         collate_fn=tf.data.DefaultAttrs(
             batch_size=batch_size,
             drop_remainder=True, # Important for pmap
@@ -103,6 +107,7 @@ def get_dataset(dataset_name: str, split: str, batch_size: int, shuffle: bool = 
                 "input_ids": tf.TensorSpec(shape=(None, MAX_SEQ_LEN), dtype=tf.int32),
                 "labels": tf.TensorSpec(shape=(None, MAX_SEQ_LEN), dtype=tf.int32),
                 "attention_mask": tf.TensorSpec(shape=(None, MAX_SEQ_LEN), dtype=tf.int32),
+                "segment_pos": tf.TensorSpec(shape=(None, MAX_SEQ_LEN), dtype=tf.int32),
             }
         )
     )
@@ -123,12 +128,15 @@ if __name__ == "__main__":
         print(f"input_ids shape: {batch["input_ids"].shape}")
         print(f"labels shape: {batch["labels"].shape}")
         print(f"attention_mask shape: {batch["attention_mask"].shape}")
+        print(f"segment_pos shape: {batch['segment_pos'].shape}")
         print("\nFirst example input_ids:")
         print(batch["input_ids"][0].numpy().tolist())
         print("\nFirst example labels (masked prompt tokens are -100):")
         print(batch["labels"][0].numpy().tolist())
         print("\nFirst example attention_mask:")
         print(batch["attention_mask"][0].numpy().tolist())
+        print("\nFirst example segment_pos:")
+        print(batch["segment_pos"][0].numpy().tolist())
 
         # Decode a part of the input_ids to verify
         decoded_input = vocab.decode(batch["input_ids"][0].numpy().tolist(), skip_special_tokens=False)

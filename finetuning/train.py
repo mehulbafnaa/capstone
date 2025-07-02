@@ -35,7 +35,7 @@ class TrainState(train_state.TrainState):
 
 def create_train_state(rng, model, learning_rate, weight_decay=0.0):
     """Creates an initial `TrainState`."""
-    params = model.init(rng, jnp.ones((1, MAX_SEQ_LEN), dtype=jnp.int32))["params"]
+    params = model.init(rng, jnp.ones((1, MAX_SEQ_LEN), dtype=jnp.int32), jnp.ones((1, MAX_SEQ_LEN), dtype=jnp.int32))["params"]
     
     # Define the optimizer
     optimizer = optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
@@ -92,7 +92,7 @@ def train_step(state, batch, dropout_rng):
     def loss_fn(params):
         # Model application with training=True for dropout etc.
         # Pass dropout_rng to the model apply function if it uses dropout
-        logits = state.apply_fn({"params": params}, batch["input_ids"], train=True, rngs={"dropout": dropout_rng}).logits
+        logits = state.apply_fn({"params": params}, batch["input_ids"], segment_pos=batch["segment_pos"], train=True, rngs={"dropout": dropout_rng}).logits
         loss = calculate_loss(logits, batch["labels"], batch["attention_mask"])
         return loss, logits # Return logits for potential metrics/debugging
 
@@ -128,7 +128,7 @@ def main():
     # Replicate the initial state across devices
     def create_train_state_local(rng, learning_rate, weight_decay=0.0):
         """Creates an initial `TrainState`."""
-        params = model.init(rng, jnp.ones((1, MAX_SEQ_LEN), dtype=jnp.int32))["params"]
+        params = model.init(rng, jnp.ones((1, MAX_SEQ_LEN), dtype=jnp.int32), jnp.ones((1, MAX_SEQ_LEN), dtype=jnp.int32))["params"]
         
         # Define the optimizer
         optimizer = optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
