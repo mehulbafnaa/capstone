@@ -125,8 +125,8 @@ def main():
             pbar = train_dataset
 
         for step, batch in enumerate(pbar):
-            batch = jax.tree_map(lambda x: jnp.array(x), batch)
-            batch = jax.tree_map(lambda x: jax.lax.broadcast(x, (jax.local_device_count(),)), batch)
+            batch = jax.tree.map(lambda x: jnp.array(x), batch)
+            batch = jax.tree.map(lambda x: jax.lax.broadcast(x, (jax.local_device_count(),)), batch)
             
             p_train_state, loss = jax.pmap(train_step, axis_name="batch")(p_train_state, batch, jax.random.split(dropout_rng, jax.local_device_count()))
 
