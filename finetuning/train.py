@@ -127,7 +127,7 @@ def main():
             batch = jax.tree.map(lambda x: jnp.array(x), batch)
             batch = jax.tree.map(lambda x: jax.lax.broadcast(x, (jax.local_device_count(),)), batch)
             
-            p_train_state, loss = jax.pmap(train_step, axis_name="batch")(p_train_state, batch, jax.random.split(dropout_rng, jax.local_device_count()))
+            p_train_state, loss = jax.pmap(train_step, axis_name="batch", in_axes=(0, 0, 0))(p_train_state, batch, jax.random.split(dropout_rng, jax.local_device_count()))
 
             if jax.process_index() == 0:
                 pbar.set_postfix(loss=f"{loss.mean():.4f}")
