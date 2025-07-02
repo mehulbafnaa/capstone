@@ -126,7 +126,16 @@ def main():
     dropout_rng = jax.random.fold_in(rng, jax.process_index() + 1) # Separate rng for dropout
 
     # Replicate the initial state across devices
-    p_train_state = jax.pmap(create_train_state, axis_name="batch", in_axes=(0, None, None), static_argnums=1)(jax.random.split(rng, jax.local_device_count()), model, LEARNING_RATE)
+    def create_train_state_local(rng, learning_rate, weight_decay=0.0):
+        """Creates an initial `TrainState`."""
+        params = model.init(rng, jnp.ones((1, MAX_SEQ_LEN), dtype=jnp.int32))["params"]
+        
+        # Define the optimizer
+        optimizer = optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
+        
+        return TrainState.create(apply_fn=model.apply, params=params, tx=optimizer)
+
+    p_train_state = jax.pmap(create_train_state_local, axis_name="batch", in_axes=(0, None))(jax.random.split(rng, jax.local_device_count()), LEARNING_RATE)
 
     # Setup checkpoint manager
     ckpt_manager = ocp.CheckpointManager(CHECKPOINT_DIR)
