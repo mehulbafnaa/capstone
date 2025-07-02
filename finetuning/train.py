@@ -72,7 +72,7 @@ def train_step(state, batch, dropout_rng):
             batch["input_ids"],
             segment_pos=batch["segment_pos"],
             rngs={"dropout": dropout_rng}
-        ).logits
+        )[0] # Assuming logits are the first element of the tuple
         
         # The labels are already correctly aligned with the logits.
         loss = calculate_loss(logits, batch["labels"])
