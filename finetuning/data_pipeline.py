@@ -99,18 +99,11 @@ def get_dataset(dataset_name: str, split: str, batch_size: int, shuffle: bool = 
         load_from_cache_file=False
     )
 
+    # Convert to TensorFlow dataset
     tf_dataset = tokenized_dataset.to_tf_dataset(
         columns=["input_ids", "labels", "attention_mask", "segment_pos"],
-        collate_fn=tf.data.DefaultAttrs(
-            batch_size=batch_size,
-            drop_remainder=True,
-            output_signature={
-                "input_ids": tf.TensorSpec(shape=(None, MAX_SEQ_LEN), dtype=tf.int32),
-                "labels": tf.TensorSpec(shape=(None, MAX_SEQ_LEN), dtype=tf.int32),
-                "attention_mask": tf.TensorSpec(shape=(None, MAX_SEQ_LEN), dtype=tf.int32),
-                "segment_pos": tf.TensorSpec(shape=(None, MAX_SEQ_LEN), dtype=tf.int32),
-            }
-        )
+        batch_size=batch_size,
+        drop_remainder=True, # Important for pmap
     )
 
     if shuffle:
