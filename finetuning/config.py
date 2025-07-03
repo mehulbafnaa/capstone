@@ -12,9 +12,11 @@ DATASET_NAME = "FrenzyMath/Herald_proofs"
 TRAIN_SPLIT = "train"
 VALIDATION_SPLIT = "validation" # Assuming a validation split exists or will be created
 
+DATASET_PROPORTION = 0.5
+
 # Finetuning Hyperparameters
 LEARNING_RATE = 1e-5
-BATCH_SIZE = 32 # Per-device batch size
+BATCH_SIZE = 2 # Per-device batch size
 NUM_EPOCHS = 3
 MAX_SEQ_LEN = 2048 # Maximum sequence length for tokenization
 GRADIENT_ACCUMULATION_STEPS = 1 # Set to >1 if per-device batch size is too small
