@@ -16,10 +16,10 @@ DATASET_PROPORTION = 0.5
 
 # Finetuning Hyperparameters
 LEARNING_RATE = 1e-5
-BATCH_SIZE = 2 # Per-device batch size
+BATCH_SIZE = 4 # Per-device batch size
 NUM_EPOCHS = 3
-MAX_SEQ_LEN = 2048 # Maximum sequence length for tokenization
-GRADIENT_ACCUMULATION_STEPS = 1 # Set to >1 if per-device batch size is too small
+MAX_SEQ_LEN = 1 # Maximum sequence length for tokenization
+GRADIENT_ACCUMULATION_STEPS = 2 # Set to >1 if per-device batch size is too small
 
 # Checkpointing Configuration
 CHECKPOINT_DIR = REPO_ROOT / "finetuning_checkpoints"

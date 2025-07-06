@@ -133,10 +133,10 @@ if __name__ == "__main__":
         
         print(f"\nPrompt length (masked labels): {first_real_label_idx}")
         
-        decoded_input = vocab.decode(batch["input_ids"][0].numpy().tolist(), skip_special_tokens=False)
+        decoded_input = vocab.decode(batch["input_ids"][0].numpy().tolist())
         print("\nDecoded input (first example):\n", decoded_input)
 
-        decoded_labels = vocab.decode([token for token in batch["labels"][0].numpy().tolist() if token != -100], skip_special_tokens=False)
+        decoded_labels = vocab.decode([token for token in batch["labels"][0].numpy().tolist() if token != -100])
         print("\nDecoded target (first example, proof part):\n", decoded_labels)
 
     print("Data pipeline test complete.")
