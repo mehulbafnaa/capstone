@@ -1,7 +1,7 @@
 
 
 import os
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict
 import sentencepiece as spm
 from tqdm import tqdm
 
@@ -9,7 +9,7 @@ from finetuning.config import DATASET_NAME, TRAIN_SPLIT, VALIDATION_SPLIT, TOK_F
 
 def pretokenize_and_save():
     """
-    Loads the dataset, tokenizes it, and saves it to disk.
+    Loads the dataset, creates a train/validation split, tokenizes it, and saves it to disk.
     This is done once to avoid a bottleneck during training.
     """
     if os.path.exists(PRETOKENIZED_DATASET_DIR):
@@ -20,8 +20,14 @@ def pretokenize_and_save():
     vocab = spm.SentencePieceProcessor(model_file=str(TOK_FILE))
 
     print(f"Loading dataset '{DATASET_NAME}'...")
-    train_dataset = load_dataset(DATASET_NAME, split=TRAIN_SPLIT, trust_remote_code=True)
-    validation_dataset = load_dataset(DATASET_NAME, split=VALIDATION_SPLIT, trust_remote_code=True)
+    # Load the entire dataset, as it only has a 'train' split
+    full_dataset = load_dataset(DATASET_NAME, split='train', trust_remote_code=True)
+
+    # Create a 90/10 train/validation split
+    print("Creating train/validation split...")
+    split_dataset = full_dataset.train_test_split(test_size=0.1, seed=42)
+    train_dataset = split_dataset["train"]
+    validation_dataset = split_dataset["test"] # .train_test_split names the validation set 'test'
 
     def tokenize_function(examples):
         prompts = []
@@ -85,8 +91,6 @@ def pretokenize_and_save():
     )
 
     print(f"Saving tokenized dataset to {PRETOKENIZED_DATASET_DIR}...")
-    # We create a dictionary to store splits and then save
-    from datasets import DatasetDict
     dataset_dict = DatasetDict({
         TRAIN_SPLIT: tokenized_train,
         VALIDATION_SPLIT: tokenized_validation
