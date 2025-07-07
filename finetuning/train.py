@@ -58,8 +58,8 @@ def train_step(state, batch, dropout_rng):
     def loss_fn(params):
         logits = state.apply_fn(
             {"params": params},
-            tokens = batch["input_ids"],
-            # attention_mask=batch["attention_mask"],
+            tokens = jnp.expand_dims(batch["input_ids"], axis=-1),
+            attention_mask=jnp.expand_dims(batch["attention_mask"], axis=-1),
             segment_pos=batch["segment_pos"],
             rngs={"dropout": new_dropout_rng}
         )[0]
