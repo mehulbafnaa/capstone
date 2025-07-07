@@ -3,6 +3,7 @@ import orbax.checkpoint as ocp
 import recurrentgemma.jax as rg
 import sentencepiece as spm
 from typing import Any, Tuple
+import jax
 import jax.numpy as jnp
 
 def load_recurrent_gemma_model(
