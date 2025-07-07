@@ -1,3 +1,4 @@
+
 import jax
 import jax.numpy as jnp
 import optax
@@ -25,6 +26,7 @@ from finetuning.config import (
     EVAL_EVERY_N_STEPS,
     WEIGHT_DTYPE,
     ACTIVATION_DTYPE,
+    DATASET_PROPORTION,
 )
 
 # Ensure JAX is initialized for distributed training
@@ -129,6 +131,24 @@ def main():
     # Load the pre-tokenized dataset
     train_dataset = get_dataset(TRAIN_SPLIT, BATCH_SIZE)
 
+    # Get the full dataset length
+    try:
+        full_dataset_size = len(train_dataset)
+    except TypeError:
+        if jax.process_index() == 0:
+            print("Warning: The training dataset has no `__len__`. Cannot use DATASET_PROPORTION.")
+        full_dataset_size = None
+
+    # Take a subset of the dataset if DATASET_PROPORTION is set
+    if full_dataset_size and DATASET_PROPORTION < 1.0:
+        subset_size = int(full_dataset_size * DATASET_PROPORTION)
+        train_dataset = train_dataset.take(subset_size)
+        num_train_steps = subset_size
+        if jax.process_index() == 0:
+            print(f"Using {DATASET_PROPORTION*100:.2f}% of the dataset: {num_train_steps} steps.")
+    else:
+        num_train_steps = full_dataset_size
+
     if jax.process_index() == 0:
         print("Starting training with gradient accumulation and mixed precision...")
 
@@ -138,7 +158,7 @@ def main():
     for epoch in range(NUM_EPOCHS):
         if jax.process_index() == 0:
             print(f"\nEpoch {epoch + 1}/{NUM_EPOCHS}")
-            pbar = tqdm(train_dataset, desc=f"Epoch {epoch + 1}")
+            pbar = tqdm(train_dataset, total=num_train_steps, desc=f"Epoch {epoch + 1}")
         else:
             pbar = train_dataset
 
@@ -160,17 +180,34 @@ def main():
                     pbar.set_postfix(loss=f"{avg_loss:.4f}")
                     total_loss = 0
 
-                if (step + 1) % SAVE_EVERY_N_STEPS == 0:
+                optimizer_step = (step + 1) // GRADIENT_ACCUMULATION_STEPS
+                if jax.process_index() == 0 and optimizer_step > 0 and optimizer_step % SAVE_EVERY_N_STEPS == 0:
                     # Ensure gradients are applied before saving
-                    ckpt_manager.save(step=step, items=p_train_state)
-                    if jax.process_index() == 0:
-                        print(f"Checkpoint saved at step {step + 1}")
+                    unreplicated_state_for_save = jax.device_get(jax.tree.map(lambda x: x[0], p_train_state))
+                    ckpt_manager.save(step=optimizer_step, items=unreplicated_state_for_save)
+                    print(f"Checkpoint saved at optimizer step {optimizer_step}")
+                    del unreplicated_state_for_save # Free memory after saving
 
     if jax.process_index() == 0:
         print("Training complete.")
         # Ensure final gradients are applied before saving
         p_train_state = p_apply_grads(p_train_state)
-        ckpt_manager.save(step="final", items=p_train_state)
+        
+        # More aggressive memory cleanup before final save
+        del p_train_step, p_apply_grads
+        if 'batch' in locals():
+            del batch
+        if 'loss' in locals():
+            del loss
+        jax.block_until_ready(p_train_state)
+        jax.clear_caches()
+
+        unreplicated_state = jax.device_get(jax.tree.map(lambda x: x[0], p_train_state))
+        if num_train_steps:
+            final_step = num_train_steps // GRADIENT_ACCUMULATION_STEPS
+            ckpt_manager.save(step=final_step, items=unreplicated_state)
+        else:
+            ckpt_manager.save(step="final", items=unreplicated_state)
         print("Final checkpoint saved.")
 
 if __name__ == "__main__":

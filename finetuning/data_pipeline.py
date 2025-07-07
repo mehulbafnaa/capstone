@@ -20,8 +20,7 @@ def get_dataset(split: str, batch_size: int, shuffle: bool = True):
         attention_mask = []
         segment_pos = []
 
-        for i in range(len(examples["input_ids"])):
-            # The pre-tokenization script already handled truncation and label masking.
+        for i in range(len(examples["input_ids"])):            # The pre-tokenization script already handled truncation and label masking.
             # Here, we just need to pad to MAX_SEQ_LEN.
             current_input_ids = examples["input_ids"][i]
             current_labels = examples["labels"][i]
