@@ -129,7 +129,7 @@ def main():
     ckpt_manager = ocp.CheckpointManager(CHECKPOINT_DIR)
 
     # Load the pre-tokenized dataset
-    train_dataset = get_dataset(TRAIN_SPLIT, BATCH_SIZE)
+    train_dataset = get_dataset(TRAIN_SPLIT, BATCH_SIZE * jax.local_device_count())
 
     # Get the full dataset length
     try:
@@ -167,7 +167,9 @@ def main():
             batch = jax.tree.map(lambda x: x.numpy(), batch)
             batch = jax.tree.map(lambda x: jnp.array(x), batch)
             local_device_count = jax.local_device_count()
-            batch = jax.tree.map(lambda x: x.reshape(local_device_count, x.shape[0] // local_device_count, *x.shape[1:]), batch)
+            # The batch from the dataset is already correctly shaped for pmap.
+            # No need to reshape here.
+            # batch = jax.tree.map(lambda x: x.reshape(local_device_count, x.shape[0] // local_device_count, *x.shape[1:]), batch)
             
             p_train_state, loss, dropout_rng = p_train_step(p_train_state, batch, dropout_rng)
             total_loss += loss.mean()
