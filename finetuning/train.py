@@ -58,7 +58,7 @@ def train_step(state, batch, dropout_rng):
     def loss_fn(params):
         logits = state.apply_fn(
             {"params": params},
-            batch["input_ids"],
+            input_ids = batch["input_ids"],
             attention_mask=batch["attention_mask"],
             segment_pos=batch["segment_pos"],
             rngs={"dropout": new_dropout_rng}
