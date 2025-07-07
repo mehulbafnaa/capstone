@@ -3,10 +3,12 @@ import orbax.checkpoint as ocp
 import recurrentgemma.jax as rg
 import sentencepiece as spm
 from typing import Any, Tuple
+import jax.numpy as jnp
 
 def load_recurrent_gemma_model(
     ckpt_dir: Path,
-    tok_file: Path
+    tok_file: Path,
+    params_dtype: Any = jnp.float32 # Add params_dtype argument with a default
 ) -> Tuple[rg.Griffin, spm.SentencePieceProcessor, Any, rg.Sampler]:
     """
     Loads the RecurrentGemma model, tokenizer, parameters, and sampler.
@@ -14,6 +16,7 @@ def load_recurrent_gemma_model(
     Args:
         ckpt_dir: Path to the model checkpoint directory.
         tok_file: Path to the SentencePieceProcessor tokenizer model file.
+        params_dtype: Optional. The desired dtype for the model parameters. Defaults to jnp.float32.
 
     Returns:
         A tuple containing:
@@ -32,6 +35,10 @@ def load_recurrent_gemma_model(
 
     restored = ocp.PyTreeCheckpointer().restore(str(ckpt_dir))
     params = restored.get("params", restored)
+
+    # Cast parameters to the desired dtype if specified
+    if params_dtype is not None:
+        params = jax.tree.map(lambda x: x.astype(params_dtype), params)
 
     # Auto-fill config via Preset
     preset = rg.Preset.RECURRENT_GEMMA_2B_V1
