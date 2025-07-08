@@ -1,42 +1,14 @@
 from pathlib import Path
 import orbax.checkpoint as ocp
 import recurrentgemma.jax as rg
-from recurrentgemma.jax.griffin import Block
+from recurrentgemma.jax import Griffin as CheckpointedGriffin
 import sentencepiece as spm
 from typing import Any, Tuple
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
 
-class CheckpointedGriffin(rg.Griffin):
-    @nn.compact
-    def __call__(
-        self, 
-        tokens,
-        segment_pos,
-        cache=None,
-        return_full_cache=False,
-    ):
-        # During training, we should not be using the cache.
-        assert cache is None, 'Cache should not be used during training.'
 
-        # Embed the tokens.
-        x = self.embedder(tokens)
-
-        # Normalize the embeddings.
-        x = self.embedder_norm(x)
-
-        # Run the blocks, applying gradient checkpointing to each one.
-        for i in range(self.config.num_layers):
-            x, _ = nn.remat(Block)(self.config, self.block_types)(x, segment_pos, None)
-
-        # Apply the final normalization layer.
-        x = self.final_norm(x)
-
-        # Compute the logits.
-        logits = self.embedder.decode(x)
-
-        return logits, None
 
 def load_recurrent_gemma_model(
     ckpt_dir: Path,
@@ -77,7 +49,7 @@ def load_recurrent_gemma_model(
     preset = rg.Preset.RECURRENT_GEMMA_2B_V1
     cfg = rg.GriffinConfig.from_flax_params_or_variables(params, preset=preset)
 
-    model = CheckpointedGriffin(cfg)
+    model = rg.Griffin(cfg)
     vocab = spm.SentencePieceProcessor(model_file=str(tok_file))
     sampler = rg.Sampler(
         model=model,
