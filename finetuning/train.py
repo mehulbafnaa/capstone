@@ -29,9 +29,6 @@ from finetuning.config import (
     DATASET_PROPORTION,
 )
 
-# Ensure JAX is initialized for distributed training
-# jax.distributed.initialize() # Removed as it might be redundant or cause issues in some TPU environments
-
 class TrainState(train_state.TrainState):
     accum_grads: any
 
