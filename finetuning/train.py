@@ -59,7 +59,7 @@ def train_step(state, batch, dropout_rng):
         logits = state.apply_fn(
             {"params": params},
             tokens=jnp.expand_dims(batch["input_ids"], axis=-1),
-            segment_pos=batch["segment_pos"],
+            segment_pos=jnp.expand_dims(batch["segment_pos"], axis=-1),
             rngs={"dropout": new_dropout_rng}
         )[0]
         loss = calculate_loss(logits, batch["labels"])
