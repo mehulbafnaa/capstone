@@ -1,11 +1,5 @@
 
-This is a modified training script that DOES NOT use gradient accumulation.
-It is intended for demonstration or debugging purposes only.
 
-WARNING: Training a large model like Gemma 2B without gradient accumulation
-(i.e., with a very small effective batch size) is likely to result in
-unstable training and poor model performance. The learning rate and other
-hyperparameters in config.py are tuned for a large effective batch size.
 
 import jax
 import jax.numpy as jnp
@@ -101,6 +95,7 @@ def setup(mesh):
     if jax.process_index() == 0:
         print("Setting up model, optimizer, and sharded training state...")
 
+    # Define sharding rules
     data_sharding = NamedSharding(mesh, PartitionSpec('data_axis'))
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
 
@@ -111,10 +106,13 @@ def setup(mesh):
             return PartitionSpec()
         return jax.tree.map(get_spec, param_pytree)
 
+    # 1. Create model, optimizer, and initial params on the host (CPU)
     model, _, params, _ = load_recurrent_gemma_model(
         CKPT_DIR, TOK_FILE, params_dtype=WEIGHT_DTYPE
     )
-    
+    optimizer = optax.adafactor(learning_rate=LEARNING_RATE)
+
+    # Add scan sharding helper for the model
     class ScanShardingHelper:
         def __init__(self, mesh):
             self.mesh = mesh
@@ -124,42 +122,36 @@ def setup(mesh):
             self.rnn_state_sharding_spec = PartitionSpec('data_axis')
     model.scan_sharding_spec = ScanShardingHelper(mesh=mesh)
 
-    param_sharding_rules = get_param_sharding(params)
-    optimizer = optax.adafactor(learning_rate=LEARNING_RATE)
-    
-    # Define the sharding for the entire TrainState PyTree.
-    # Non-array fields like `apply_fn` and `tx` are not sharded.
-    state_sharding_spec = TrainState(
-        step=PartitionSpec(),
-        apply_fn=None, # Not sharded
-        params=param_sharding_rules,
-        tx=None, # Not sharded
-        opt_state=get_param_sharding(optimizer.init(params))
-    )
-
-    # pjit the creation of the training state, marking non-array args as static
-    p_create_sharded_train_state = pjit(
-        TrainState.create,
-        static_argnames=('apply_fn', 'tx'),
-        out_shardings=state_sharding_spec
-    )
-    
-    p_train_state = p_create_sharded_train_state(
+    # 2. Create the TrainState on the host
+    state = TrainState.create(
         apply_fn=model.apply,
         params=params,
         tx=optimizer
     )
-    del params
+    del params # No longer needed on host
 
-    # pjit the training step
+    # 3. Define the sharding specification for the TrainState
+    param_sharding_rules = get_param_sharding(state.params)
+    state_sharding_spec = TrainState(
+        step=replicated_sharding, # Replicate step counter
+        apply_fn=None, # Not a JAX array, so no sharding
+        params=param_sharding_rules,
+        tx=None, # Not a JAX array, so no sharding
+        opt_state=get_param_sharding(state.opt_state)
+    )
+
+    # 4. Move the state to the TPUs, applying the sharding rule
+    sharded_state = jax.device_put(state, state_sharding_spec)
+
+    # 5. pjit the training step
     p_train_step = pjit(
         train_step,
-        in_shardings=(p_train_state, data_sharding, replicated_sharding, replicated_sharding),
-        out_shardings=(p_train_state, replicated_sharding),
+        in_shardings=(state_sharding_spec, data_sharding, replicated_sharding, replicated_sharding),
+        out_shardings=(state_sharding_spec, replicated_sharding),
         donate_argnums=(0,)
     )
 
-    return p_train_state, p_train_step
+    return sharded_state, p_train_step
 
 def run_training_loop(state, p_train_step, train_dataset):
     """Executes the main training loop over epochs and steps."""
