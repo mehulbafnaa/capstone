@@ -127,16 +127,21 @@ def setup(mesh):
     param_sharding_rules = get_param_sharding(params)
     optimizer = optax.adafactor(learning_rate=LEARNING_RATE)
     
-    # pjit the creation of the training state
+    # Define the sharding for the entire TrainState PyTree.
+    # Non-array fields like `apply_fn` and `tx` are not sharded.
+    state_sharding_spec = TrainState(
+        step=PartitionSpec(),
+        apply_fn=None, # Not sharded
+        params=param_sharding_rules,
+        tx=None, # Not sharded
+        opt_state=get_param_sharding(optimizer.init(params))
+    )
+
+    # pjit the creation of the training state, marking non-array args as static
     p_create_sharded_train_state = pjit(
         TrainState.create,
-        out_shardings=TrainState(
-            step=PartitionSpec(),
-            apply_fn=model.apply,
-            params=param_sharding_rules,
-            tx=optimizer,
-            opt_state=get_param_sharding(optimizer.init(params))
-        )
+        static_argnames=('apply_fn', 'tx'),
+        out_shardings=state_sharding_spec
     )
     
     p_train_state = p_create_sharded_train_state(
