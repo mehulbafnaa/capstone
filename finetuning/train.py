@@ -497,11 +497,26 @@ def main():
         # =======================================================================
         # FIX: Apply any final gradients that didn't make a full accumulation batch.
         # This call MUST be inside the 'with Mesh(...)' block to have access
-        # to the 'data_axis' name for the pmean collective operation.
+        # to the 'data_axis' name for the psum collective operation.
         # =======================================================================
         if jax.process_index() == 0:
             print("\nApplying final accumulated gradients...")
+        
+        # Apply final gradients. This is a collective operation.
         p_train_state = p_apply_grads(p_train_state)
+        
+        # Wait for all devices to finish before saving.
+        jax.block_until_ready(p_train_state)
+
+        # Save the final checkpoint from the main process.
+        # Orbax's PyTreeCheckpointer can handle saving the sharded state.
+        if jax.process_index() == 0:
+            if num_train_steps:
+                final_step = num_train_steps * NUM_EPOCHS
+                ckpt_manager.save(step=final_step, items=p_train_state)
+            else:
+                ckpt_manager.save(step="final", items=p_train_state)
+            print("Final checkpoint saved.")
 
         if jax.process_index() == 0:
             print("\nTraining complete.")
