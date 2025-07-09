@@ -23,11 +23,8 @@ LEARNING_RATE = 1e-5
 # A batch size of 4 with a sequence length of 2048 should be safe on a TPU v4.
 BATCH_SIZE = 4 # Per-device batch size. Reduced to 1 to prevent OOM errors.
 NUM_EPOCHS = 3
-MAX_SEQ_LEN = 4 # Maximum sequence length for tokenization
+MAX_SEQ_LEN = 2048 # Maximum sequence length for tokenization
 
-# With a per-device batch size of 1 and 8 TPU cores, the global batch size is 8.
-# To simulate a larger batch size for training stability, we accumulate gradients.
-# A global batch size of 256 is a good target. 256 / 8 = 32.
 GRADIENT_ACCUMULATION_STEPS = 64
 
 # Checkpointing Configuration
