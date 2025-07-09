@@ -444,7 +444,8 @@ def main():
         p_apply_grads = pjit(
             apply_accumulated_gradients,
             in_shardings=(state_sharding_spec,),
-            out_shardings=state_sharding_spec
+            out_shardings=state_sharding_spec,
+            donate_argnums=(0,)
         )
 
         # Initialize PRNG keys
