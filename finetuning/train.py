@@ -1,303 +1,18 @@
 
 
-# import jax
-# import jax.numpy as jnp
-# import optax
-# import orbax.checkpoint as ocp
-# from flax.training import train_state
-# from flax.core import freeze, unfreeze
-# from tqdm import tqdm
-# import time
-# from pathlib import Path
-# # Import pjit and sharding utilities
-# from jax.sharding import Mesh, PartitionSpec, NamedSharding
-# from jax.experimental.pjit import pjit
-# import jax.tree_util
-
-# from utils.model_loader import load_recurrent_gemma_model
-# from finetuning.data_pipeline import get_dataset
-# from finetuning.config import (
-#     CKPT_DIR,
-#     TOK_FILE,
-#     TRAIN_SPLIT,
-#     VALIDATION_SPLIT,
-#     LEARNING_RATE,
-#     BATCH_SIZE,
-#     NUM_EPOCHS,
-#     MAX_SEQ_LEN,
-#     GRADIENT_ACCUMULATION_STEPS,
-#     CHECKPOINT_DIR,
-#     SAVE_EVERY_N_STEPS,
-#     EVAL_EVERY_N_STEPS,
-#     WEIGHT_DTYPE,
-#     ACTIVATION_DTYPE,
-#     DATASET_PROPORTION,
-# )
-
-# # Custom TrainState to hold accumulated gradients
-# class TrainState(train_state.TrainState):
-#     accum_grads: any
-
-# # Loss function remains the same, can be jitted for performance
-# @jax.jit
-# def calculate_loss(logits, labels):
-#     vocab_size = logits.shape[-1]
-#     logits_flat = logits.reshape(-1, vocab_size)
-#     labels_flat = labels.reshape(-1)
-#     loss_mask = (labels_flat != -100)
-#     losses = optax.softmax_cross_entropy_with_integer_labels(logits=logits_flat.astype(jnp.float32), labels=labels_flat)
-#     masked_losses = jnp.where(loss_mask, losses, 0.0)
-#     total_loss = jnp.sum(masked_losses)
-#     num_valid_tokens = jnp.sum(loss_mask)
-#     loss = total_loss / (num_valid_tokens + 1e-8)
-#     return loss
-
-# # --- The core training and gradient application steps will now be managed by pjit ---
-# def train_step(state, batch, base_dropout_rng, step_num):
-#     """
-#     Performs a single training step. RNG is handled by folding in the step number.
-#     """
-#     # This is the robust, idiomatic way to handle RNG with pjit.
-#     # Create a unique key for this specific training step by folding the step
-#     # number into the base RNG key.
-#     step_dropout_key = jax.random.fold_in(base_dropout_rng, step_num)
-
-#     def loss_fn(params):
-#         # The model expects a 2D input of shape [batch, seq_len].
-#         logits = state.apply_fn(
-#             {"params": params},
-#             tokens=batch["input_ids"],
-#             segment_pos=batch["segment_pos"],
-#             rngs={"dropout": step_dropout_key} # Use the unique key for this step
-#         )[0]
-#         loss = calculate_loss(logits, batch["labels"])
-#         return loss
-
-#     grad_fn = jax.value_and_grad(loss_fn)
-#     loss, grads = grad_fn(state.params)
-#     state = state.replace(accum_grads=jax.tree.map(lambda x, y: x + y, state.accum_grads, grads))
-
-#     # We no longer need to thread the keys through the loop
-#     return state, loss
-
-
-
-# def apply_accumulated_gradients(state):
-#     """
-#     Averages the accumulated gradients and applies the update.
-#     This function is designed to be pjit-compiled.
-#     """
-#     # Simple approach - just scale by accumulation steps
-#     # pjit handles cross-device communication automatically
-#     avg_grads = jax.tree.map(lambda x: x / GRADIENT_ACCUMULATION_STEPS, state.accum_grads)
-    
-#     # Apply the gradients
-#     state = state.apply_gradients(grads=avg_grads)
-    
-#     # Reset accumulated gradients to zero
-#     state = state.replace(accum_grads=jax.tree.map(jnp.zeros_like, state.accum_grads))
-    
-#     return state
-
-# def main():
-#     if jax.process_index() == 0:
-#         print("JAX distributed initialized.")
-#         print(f"Total processes: {jax.process_count()}")
-#         print(f"Local devices: {jax.local_device_count()}")
-#         print(f"Global devices: {jax.device_count()}")
-
-#     # All pjit operations must be within a Mesh context manager
-#     num_devices = jax.device_count()
-#     # Create a 1D mesh, where we will shard data and model parameters.
-#     with Mesh(jax.devices(), axis_names=('data_axis',)) as device_mesh:
-#         # --- FIX for library bug with batch size of 1 ---
-#         effective_batch_size = BATCH_SIZE
-#         if BATCH_SIZE == 1:
-#             effective_batch_size = 2
-#             if jax.process_index() == 0:
-#                 print("\n" + "="*80)
-#                 print("WARNING: The per-device BATCH_SIZE is set to 1.")
-#                 print("The recurrentgemma library has a known issue handling a batch size of 1,")
-#                 print("which can cause shape errors inside the model's layers.")
-#                 print(f"Temporarily overriding per-device batch size to {effective_batch_size} to avoid this issue.")
-#                 print("Please consider setting BATCH_SIZE > 1 in your config file for stable training.")
-#                 print("="*80 + "\n")
-
-#         # Define sharding rules.
-#         data_sharding = NamedSharding(mesh=device_mesh, spec=PartitionSpec('data_axis',))
-#         replicated_sharding = NamedSharding(mesh=device_mesh, spec=PartitionSpec())
-
-#         def get_param_sharding(param_pytree):
-#             """A helper to define sharding rules for model parameters."""
-#             def get_spec(param):
-#                 # Shard large parameters along the last dimension on the 'data_axis'
-#                 if param.ndim > 1 and param.size > 1_000_000:
-#                     sharding_spec = [None] * (param.ndim - 1) + ['data_axis']
-#                     return PartitionSpec(*sharding_spec)
-#                 else: # Replicate smaller parameters
-#                     return PartitionSpec()
-#             return jax.tree.map(get_spec, param_pytree)
-
-#         # 1. Load model and parameters on the CPU first.
-#         model, _, params, _ = load_recurrent_gemma_model(
-#             CKPT_DIR, TOK_FILE, params_dtype=WEIGHT_DTYPE
-#         )
-
-#         class ScanShardingHelper:
-#             def __init__(self, mesh):
-#                 self.mesh = mesh
-#                 self.sequence_axis_name = None
-#                 self.sequence_axis_index_groups = None
-#                 self.activations_sharding_spec = PartitionSpec('data_axis')
-#                 self.rnn_state_sharding_spec = PartitionSpec('data_axis')
-
-#         model.scan_sharding_spec = ScanShardingHelper(mesh=device_mesh)
-
-#         # 2. Create the optimizer ONCE on the host.
-#         optimizer = optax.adafactor(learning_rate=LEARNING_RATE)
-
-#         # 3. Define sharding for the ENTIRE TrainState.
-#         param_sharding_rules = get_param_sharding(params)
-#         dummy_opt_state = optimizer.init(params)
-
-#         if isinstance(dummy_opt_state, tuple):
-#             opt_state_sharding_rules = tuple(get_param_sharding(s) for s in dummy_opt_state)
-#         else:
-#             opt_state_sharding_rules = get_param_sharding(dummy_opt_state)
-
-#         state_sharding_spec = TrainState(
-#             step=PartitionSpec(),
-#             apply_fn=model.apply,
-#             params=param_sharding_rules,
-#             tx=optimizer,
-#             opt_state=opt_state_sharding_rules,
-#             accum_grads=param_sharding_rules
-#         )
-
-#         # 4. Define the function to create the sharded training state.
-#         def create_sharded_train_state(params):
-#             return TrainState.create(
-#                 apply_fn=model.apply,
-#                 params=params,
-#                 tx=optimizer,
-#                 accum_grads=jax.tree.map(jnp.zeros_like, params)
-#             )
-
-#         # Compile the creation function, specifying sharding for inputs and outputs.
-#         p_create_sharded_train_state = pjit(
-#             create_sharded_train_state,
-#             in_shardings=(param_sharding_rules,),
-#             out_shardings=state_sharding_spec
-#         )
-#         # Run the creation function to get the distributed training state.
-#         p_train_state = p_create_sharded_train_state(params)
-#         del params, dummy_opt_state # Free CPU memory
-
-#         # --- pjit-compile the training functions with sharding info ---
-#         p_train_step = pjit(
-#             train_step,
-#             in_shardings=(state_sharding_spec, data_sharding, replicated_sharding, replicated_sharding),
-#             out_shardings=(state_sharding_spec, replicated_sharding)
-#         )
-#         p_apply_grads = pjit(
-#             apply_accumulated_gradients,
-#             in_shardings=(state_sharding_spec,),
-#             out_shardings=state_sharding_spec,
-#             donate_argnums=(0,)
-#         )
-
-#         # Initialize PRNG keys
-#         rng = jax.random.PRNGKey(0)
-#         base_dropout_rng = jax.random.fold_in(rng, jax.process_index())
-
-#         ckpt_manager = ocp.CheckpointManager(CHECKPOINT_DIR, ocp.PyTreeCheckpointer())
-#         train_dataset = get_dataset(TRAIN_SPLIT, effective_batch_size * num_devices)
-
-#         try:
-#             num_train_steps = len(train_dataset) // (GRADIENT_ACCUMULATION_STEPS)
-#         except TypeError:
-#             num_train_steps = None
-
-#         if jax.process_index() == 0:
-#             print("Starting training with Model Parallelism (pjit)...")
-
-#         for epoch in range(NUM_EPOCHS):
-#             if jax.process_index() == 0:
-#                 print(f"\nEpoch {epoch + 1}/{NUM_EPOCHS}")
-#                 pbar = tqdm(train_dataset, total=num_train_steps, desc=f"Epoch {epoch + 1}")
-#             else:
-#                 pbar = train_dataset
-
-#             total_loss = 0
-#             global_step_counter = 0
-            
-#             for step, batch in enumerate(pbar):
-#                 batch = jax.tree.map(lambda x: x.numpy(), batch)
-#                 sharded_batch = jax.device_put(batch, data_sharding)
-
-#                 p_train_state, loss = p_train_step(p_train_state, sharded_batch, base_dropout_rng, step)
-#                 total_loss += loss.mean()
-
-#                 if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
-#                     p_train_state = p_apply_grads(p_train_state)
-#                     if jax.process_index() == 0:
-#                         avg_loss = total_loss.item() / GRADIENT_ACCUMULATION_STEPS
-#                         pbar.set_postfix(loss=f"{avg_loss:.4f}")
-#                         pbar.update(1)
-#                         total_loss = 0
-#                         global_step_counter += 1
-
-#             if jax.process_index() == 0 and not num_train_steps:
-#                  pbar.n = global_step_counter
-#                  pbar.total = global_step_counter
-#                  pbar.close()
-
-#         # CRITICAL FIX: Apply final gradients only if there are remaining accumulated gradients
-#         # And ensure ALL processes participate in this collective operation
-#         remaining_steps = step % GRADIENT_ACCUMULATION_STEPS
-#         if remaining_steps > 0:
-#             if jax.process_index() == 0:
-#                 print(f"\nApplying final accumulated gradients ({remaining_steps} remaining steps)...")
-            
-#             # All processes must participate in this collective operation
-#             p_train_state = p_apply_grads(p_train_state)
-        
-#         # Ensure all processes synchronize before saving
-#         jax.block_until_ready(p_train_state)
-
-#         # Save the final checkpoint from the main process only
-#         if jax.process_index() == 0:
-#             if num_train_steps:
-#                 final_step = num_train_steps * NUM_EPOCHS
-#                 ckpt_manager.save(step=final_step, items=p_train_state)
-#             else:
-#                 ckpt_manager.save(step="final", items=p_train_state)
-#             print("Final checkpoint saved.")
-
-#         if jax.process_index() == 0:
-#             print("\nTraining complete.")
-
-
-# if __name__ == "__main__":
-#     from finetuning.pretokenize_dataset import pretokenize_and_save
-#     pretokenize_and_save()
-#     main()
-
-
-
-
 import jax
 import jax.numpy as jnp
 import optax
 import orbax.checkpoint as ocp
 from flax.training import train_state
+from flax.core import freeze, unfreeze
 from tqdm import tqdm
 import time
 from pathlib import Path
+# Import pjit and sharding utilities
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.pjit import pjit
 import jax.tree_util
-from datasets import load_dataset
 
 from utils.model_loader import load_recurrent_gemma_model
 from finetuning.data_pipeline import get_dataset
@@ -305,256 +20,263 @@ from finetuning.config import (
     CKPT_DIR,
     TOK_FILE,
     TRAIN_SPLIT,
-    DATASET_NAME,
+    VALIDATION_SPLIT,
     LEARNING_RATE,
     BATCH_SIZE,
     NUM_EPOCHS,
+    MAX_SEQ_LEN,
     GRADIENT_ACCUMULATION_STEPS,
     CHECKPOINT_DIR,
+    SAVE_EVERY_N_STEPS,
+    EVAL_EVERY_N_STEPS,
     WEIGHT_DTYPE,
+    ACTIVATION_DTYPE,
     DATASET_PROPORTION,
 )
 
-# Custom TrainState to hold accumulated gradients.
+# Custom TrainState to hold accumulated gradients
 class TrainState(train_state.TrainState):
     accum_grads: any
 
-# Loss function remains the same, can be jitted for performance.
+# Loss function remains the same, can be jitted for performance
 @jax.jit
 def calculate_loss(logits, labels):
     vocab_size = logits.shape[-1]
     logits_flat = logits.reshape(-1, vocab_size)
     labels_flat = labels.reshape(-1)
     loss_mask = (labels_flat != -100)
-    losses = optax.softmax_cross_entropy_with_integer_labels(
-        logits=logits_flat.astype(jnp.float32), labels=labels_flat
-    )
+    losses = optax.softmax_cross_entropy_with_integer_labels(logits=logits_flat.astype(jnp.float32), labels=labels_flat)
     masked_losses = jnp.where(loss_mask, losses, 0.0)
     total_loss = jnp.sum(masked_losses)
     num_valid_tokens = jnp.sum(loss_mask)
     loss = total_loss / (num_valid_tokens + 1e-8)
     return loss
 
+# --- The core training and gradient application steps will now be managed by pjit ---
 def train_step(state, batch, base_dropout_rng, step_num):
-    """Performs a single training step, calculating and accumulating gradients."""
+    """
+    Performs a single training step. RNG is handled by folding in the step number.
+    """
+    # This is the robust, idiomatic way to handle RNG with pjit.
+    # Create a unique key for this specific training step by folding the step
+    # number into the base RNG key.
     step_dropout_key = jax.random.fold_in(base_dropout_rng, step_num)
 
     def loss_fn(params):
+        # The model expects a 2D input of shape [batch, seq_len].
         logits = state.apply_fn(
             {"params": params},
             tokens=batch["input_ids"],
             segment_pos=batch["segment_pos"],
-            rngs={"dropout": step_dropout_key}
+            rngs={"dropout": step_dropout_key} # Use the unique key for this step
         )[0]
-        return calculate_loss(logits, batch["labels"])
+        loss = calculate_loss(logits, batch["labels"])
+        return loss
 
     grad_fn = jax.value_and_grad(loss_fn)
     loss, grads = grad_fn(state.params)
-    state = state.replace(
-        accum_grads=jax.tree.map(lambda x, y: x + y, state.accum_grads, grads)
-    )
+    state = state.replace(accum_grads=jax.tree.map(lambda x, y: x + y, state.accum_grads, grads))
+
+    # We no longer need to thread the keys through the loop
     return state, loss
 
+
+
 def apply_accumulated_gradients(state):
-    """Averages accumulated gradients and applies the update."""
-    avg_grads = jax.tree.map(
-        lambda x: x / GRADIENT_ACCUMULATION_STEPS, state.accum_grads
-    )
+    """
+    Averages the accumulated gradients and applies the update.
+    This function is designed to be pjit-compiled.
+    """
+    # Simple approach - just scale by accumulation steps
+    # pjit handles cross-device communication automatically
+    avg_grads = jax.tree.map(lambda x: x / GRADIENT_ACCUMULATION_STEPS, state.accum_grads)
+    
+    # Apply the gradients
     state = state.apply_gradients(grads=avg_grads)
-    state = state.replace(
-        accum_grads=jax.tree.map(jnp.zeros_like, state.accum_grads)
-    )
-    return state
-
-def print_training_summary(num_devices, effective_batch_size, raw_dataset_size):
-    """Prints a summary of the training configuration."""
-    global_batch_size = effective_batch_size * num_devices
-    effective_global_batch_size = global_batch_size * GRADIENT_ACCUMULATION_STEPS
     
-    examples_to_use = int(raw_dataset_size * DATASET_PROPORTION)
-    num_micro_batches = examples_to_use // global_batch_size
-    num_train_steps_per_epoch = num_micro_batches // GRADIENT_ACCUMULATION_STEPS
-
-    print("\n" + "="*80)
-    print("TRAINING CONFIGURATION SUMMARY")
-    print("="*80)
-    print(f"Number of accelerator devices: {num_devices}")
-    print(f"Per-device batch size: {effective_batch_size}")
-    print(f"Global micro-batch size (per forward pass): {global_batch_size}")
-    print(f"Gradient accumulation steps: {GRADIENT_ACCUMULATION_STEPS}")
-    print(f"Effective global batch size (per optimizer step): {effective_global_batch_size}")
-    print(f"Raw dataset size: {raw_dataset_size}")
-    print(f"Proportion to use: {DATASET_PROPORTION * 100:.1f}% ({examples_to_use} examples)")
-    print(f"Optimizer steps per epoch: {num_train_steps_per_epoch}")
-    print(f"Number of epochs: {NUM_EPOCHS}")
-    print("="*80 + "\n")
-
-def setup(mesh):
-    """Handles all the boilerplate setup for model, optimizer, and state."""
-    if jax.process_index() == 0:
-        print("Setting up model, optimizer, and sharded training state...")
-
-    data_sharding = NamedSharding(mesh, PartitionSpec('data_axis'))
-    replicated_sharding = NamedSharding(mesh, PartitionSpec())
-
-    def get_param_sharding(param_pytree):
-        def get_spec(param):
-            if param.ndim > 1 and param.size > 1_000_000:
-                return PartitionSpec(*([None] * (param.ndim - 1) + ['data_axis']))
-            return PartitionSpec()
-        return jax.tree.map(get_spec, param_pytree)
-
-    model, _, params, _ = load_recurrent_gemma_model(
-        CKPT_DIR, TOK_FILE, params_dtype=WEIGHT_DTYPE
-    )
+    # Reset accumulated gradients to zero
+    state = state.replace(accum_grads=jax.tree.map(jnp.zeros_like, state.accum_grads))
     
-    # CRITICAL FIX: Provide sharding information for the model's internal scan operation.
-    # This helper class tells the low-level Pallas kernel how its inputs are sharded.
-    class ScanShardingHelper:
-        def __init__(self, mesh):
-            self.mesh = mesh
-            self.sequence_axis_name = None
-            self.sequence_axis_index_groups = None
-            self.activations_sharding_spec = PartitionSpec('data_axis')
-            self.rnn_state_sharding_spec = PartitionSpec('data_axis')
-
-    model.scan_sharding_spec = ScanShardingHelper(mesh=mesh)
-
-    param_sharding_rules = get_param_sharding(params)
-
-    optimizer = optax.adafactor(learning_rate=LEARNING_RATE)
-    dummy_opt_state = optimizer.init(params)
-    if isinstance(dummy_opt_state, tuple):
-        opt_state_sharding_rules = tuple(get_param_sharding(s) for s in dummy_opt_state)
-    else:
-        opt_state_sharding_rules = get_param_sharding(dummy_opt_state)
-
-    state_sharding_spec = TrainState(
-        step=PartitionSpec(),
-        apply_fn=model.apply,
-        params=param_sharding_rules,
-        tx=optimizer,
-        opt_state=opt_state_sharding_rules,
-        accum_grads=param_sharding_rules
-    )
-
-    def create_sharded_train_state(params):
-        return TrainState.create(
-            apply_fn=model.apply,
-            params=params,
-            tx=optimizer,
-            accum_grads=jax.tree.map(jnp.zeros_like, params)
-        )
-
-    p_create_sharded_train_state = pjit(
-        create_sharded_train_state,
-        in_shardings=(param_sharding_rules,),
-        out_shardings=state_sharding_spec
-    )
-
-    p_train_state = p_create_sharded_train_state(params)
-    del params, dummy_opt_state
-
-    p_train_step = pjit(
-        train_step,
-        in_shardings=(state_sharding_spec, data_sharding, replicated_sharding, replicated_sharding),
-        out_shardings=(state_sharding_spec, replicated_sharding)
-    )
-    p_apply_grads = pjit(
-        apply_accumulated_gradients,
-        in_shardings=(state_sharding_spec,),
-        out_shardings=state_sharding_spec,
-        donate_argnums=(0,)
-    )
-
-    return p_train_state, p_train_step, p_apply_grads
-
-def run_training_loop(state, p_train_step, p_apply_grads, train_dataset):
-    """Executes the main training loop over epochs and steps."""
-    if jax.process_index() == 0:
-        print("Starting training...")
-
-    rng = jax.random.PRNGKey(0)
-    base_dropout_rng = jax.random.fold_in(rng, jax.process_index())
-    
-    num_micro_batches = len(train_dataset)
-    num_train_steps_per_epoch = num_micro_batches // GRADIENT_ACCUMULATION_STEPS
-
-    for epoch in range(NUM_EPOCHS):
-        if jax.process_index() == 0:
-            print(f"\nEpoch {epoch + 1}/{NUM_EPOCHS}")
-            pbar = tqdm(train_dataset, total=num_train_steps_per_epoch, desc=f"Epoch {epoch + 1}")
-        else:
-            pbar = train_dataset
-
-        total_loss = 0.0
-        for step, batch in enumerate(pbar):
-            # Explicitly convert TF Tensors to NumPy arrays for JAX compatibility
-            batch = jax.tree_util.tree_map(lambda x: x.numpy(), batch)
-            
-            # Pass the NumPy batch directly to pjit. It will handle sharding.
-            state, loss = p_train_step(state, batch, base_dropout_rng, step)
-            total_loss += loss.mean()
-
-            if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
-                state = p_apply_grads(state)
-                if jax.process_index() == 0:
-                    avg_loss = total_loss.item() / GRADIENT_ACCUMULATION_STEPS
-                    pbar.set_postfix(loss=f"{avg_loss:.4f}")
-                    pbar.update(1)
-                    total_loss = 0.0
-        
-        remaining_steps = num_micro_batches % GRADIENT_ACCUMULATION_STEPS
-        if remaining_steps > 0:
-             if jax.process_index() == 0:
-                print(f"\nApplying final {remaining_steps} accumulated gradients for epoch {epoch + 1}...")
-             state = p_apply_grads(state)
-
     return state
 
 def main():
-    """Main orchestration function."""
     if jax.process_index() == 0:
         print("JAX distributed initialized.")
-        print(f"Total processes: {jax.process_count()}; Local devices: {jax.local_device_count()}; Global devices: {jax.device_count()}")
+        print(f"Total processes: {jax.process_count()}")
+        print(f"Local devices: {jax.local_device_count()}")
+        print(f"Global devices: {jax.device_count()}")
 
+    # All pjit operations must be within a Mesh context manager
     num_devices = jax.device_count()
-    
-    effective_batch_size = BATCH_SIZE
-    if BATCH_SIZE == 1:
-        effective_batch_size = 2
+    # Create a 1D mesh, where we will shard data and model parameters.
+    with Mesh(jax.devices(), axis_names=('data_axis',)) as device_mesh:
+        # --- FIX for library bug with batch size of 1 ---
+        effective_batch_size = BATCH_SIZE
+        if BATCH_SIZE == 1:
+            effective_batch_size = 2
+            if jax.process_index() == 0:
+                print("\n" + "="*80)
+                print("WARNING: The per-device BATCH_SIZE is set to 1.")
+                print("The recurrentgemma library has a known issue handling a batch size of 1,")
+                print("which can cause shape errors inside the model's layers.")
+                print(f"Temporarily overriding per-device batch size to {effective_batch_size} to avoid this issue.")
+                print("Please consider setting BATCH_SIZE > 1 in your config file for stable training.")
+                print("="*80 + "\n")
+
+        # Define sharding rules.
+        data_sharding = NamedSharding(mesh=device_mesh, spec=PartitionSpec('data_axis',))
+        replicated_sharding = NamedSharding(mesh=device_mesh, spec=PartitionSpec())
+
+        def get_param_sharding(param_pytree):
+            """A helper to define sharding rules for model parameters."""
+            def get_spec(param):
+                # Shard large parameters along the last dimension on the 'data_axis'
+                if param.ndim > 1 and param.size > 1_000_000:
+                    sharding_spec = [None] * (param.ndim - 1) + ['data_axis']
+                    return PartitionSpec(*sharding_spec)
+                else: # Replicate smaller parameters
+                    return PartitionSpec()
+            return jax.tree.map(get_spec, param_pytree)
+
+        # 1. Load model and parameters on the CPU first.
+        model, _, params, _ = load_recurrent_gemma_model(
+            CKPT_DIR, TOK_FILE, params_dtype=WEIGHT_DTYPE
+        )
+
+        class ScanShardingHelper:
+            def __init__(self, mesh):
+                self.mesh = mesh
+                self.sequence_axis_name = None
+                self.sequence_axis_index_groups = None
+                self.activations_sharding_spec = PartitionSpec('data_axis')
+                self.rnn_state_sharding_spec = PartitionSpec('data_axis')
+
+        model.scan_sharding_spec = ScanShardingHelper(mesh=device_mesh)
+
+        # 2. Create the optimizer ONCE on the host.
+        optimizer = optax.adafactor(learning_rate=LEARNING_RATE)
+
+        # 3. Define sharding for the ENTIRE TrainState.
+        param_sharding_rules = get_param_sharding(params)
+        dummy_opt_state = optimizer.init(params)
+
+        if isinstance(dummy_opt_state, tuple):
+            opt_state_sharding_rules = tuple(get_param_sharding(s) for s in dummy_opt_state)
+        else:
+            opt_state_sharding_rules = get_param_sharding(dummy_opt_state)
+
+        state_sharding_spec = TrainState(
+            step=PartitionSpec(),
+            apply_fn=model.apply,
+            params=param_sharding_rules,
+            tx=optimizer,
+            opt_state=opt_state_sharding_rules,
+            accum_grads=param_sharding_rules
+        )
+
+        # 4. Define the function to create the sharded training state.
+        def create_sharded_train_state(params):
+            return TrainState.create(
+                apply_fn=model.apply,
+                params=params,
+                tx=optimizer,
+                accum_grads=jax.tree.map(jnp.zeros_like, params)
+            )
+
+        # Compile the creation function, specifying sharding for inputs and outputs.
+        p_create_sharded_train_state = pjit(
+            create_sharded_train_state,
+            in_shardings=(param_sharding_rules,),
+            out_shardings=state_sharding_spec
+        )
+        # Run the creation function to get the distributed training state.
+        p_train_state = p_create_sharded_train_state(params)
+        del params, dummy_opt_state # Free CPU memory
+
+        # --- pjit-compile the training functions with sharding info ---
+        p_train_step = pjit(
+            train_step,
+            in_shardings=(state_sharding_spec, data_sharding, replicated_sharding, replicated_sharding),
+            out_shardings=(state_sharding_spec, replicated_sharding)
+        )
+        p_apply_grads = pjit(
+            apply_accumulated_gradients,
+            in_shardings=(state_sharding_spec,),
+            out_shardings=state_sharding_spec,
+            donate_argnums=(0,)
+        )
+
+        # Initialize PRNG keys
+        rng = jax.random.PRNGKey(0)
+        base_dropout_rng = jax.random.fold_in(rng, jax.process_index())
+
+        ckpt_manager = ocp.CheckpointManager(CHECKPOINT_DIR, ocp.PyTreeCheckpointer())
+        train_dataset = get_dataset(TRAIN_SPLIT, effective_batch_size * num_devices)
+
+        try:
+            num_train_steps = len(train_dataset) // (GRADIENT_ACCUMULATION_STEPS)
+        except TypeError:
+            num_train_steps = None
+
         if jax.process_index() == 0:
-            print("\nWARNING: BATCH_SIZE is 1, temporarily overriding to 2 to avoid library bug.\n")
+            print("Starting training with Model Parallelism (pjit)...")
 
-    # Load raw dataset metadata once to get its size for the summary.
-    # This avoids changing the data_pipeline.py file.
-    if jax.process_index() == 0:
-        print("Loading dataset metadata to calculate training steps...")
-        raw_dataset_for_size = load_dataset(DATASET_NAME, split=TRAIN_SPLIT)
-        raw_dataset_size = len(raw_dataset_for_size)
-        del raw_dataset_for_size
-        print_training_summary(num_devices, effective_batch_size, raw_dataset_size)
-    
-    # Process the raw dataset into a batched TF dataset using the original function.
-    train_dataset = get_dataset(TRAIN_SPLIT, effective_batch_size * num_devices)
+        for epoch in range(NUM_EPOCHS):
+            if jax.process_index() == 0:
+                print(f"\nEpoch {epoch + 1}/{NUM_EPOCHS}")
+                pbar = tqdm(train_dataset, total=num_train_steps, desc=f"Epoch {epoch + 1}")
+            else:
+                pbar = train_dataset
 
-    with Mesh(jax.devices(), axis_names=('data_axis',)) as mesh:
-        state, p_train_step, p_apply_grads = setup(mesh)
-        final_state = run_training_loop(state, p_train_step, p_apply_grads, train_dataset)
+            total_loss = 0
+            global_step_counter = 0
+            
+            for step, batch in enumerate(pbar):
+                batch = jax.tree.map(lambda x: x.numpy(), batch)
+                sharded_batch = jax.device_put(batch, data_sharding)
 
-        jax.block_until_ready(final_state)
+                p_train_state, loss = p_train_step(p_train_state, sharded_batch, base_dropout_rng, step)
+                total_loss += loss.mean()
+
+                if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
+                    p_train_state = p_apply_grads(p_train_state)
+                    if jax.process_index() == 0:
+                        avg_loss = total_loss.item() / GRADIENT_ACCUMULATION_STEPS
+                        pbar.set_postfix(loss=f"{avg_loss:.4f}")
+                        pbar.update(1)
+                        total_loss = 0
+                        global_step_counter += 1
+
+            if jax.process_index() == 0 and not num_train_steps:
+                 pbar.n = global_step_counter
+                 pbar.total = global_step_counter
+                 pbar.close()
+
+        # CRITICAL FIX: Apply final gradients only if there are remaining accumulated gradients
+        # And ensure ALL processes participate in this collective operation
+        remaining_steps = step % GRADIENT_ACCUMULATION_STEPS
+        if remaining_steps > 0:
+            if jax.process_index() == 0:
+                print(f"\nApplying final accumulated gradients ({remaining_steps} remaining steps)...")
+            
+            # All processes must participate in this collective operation
+            p_train_state = p_apply_grads(p_train_state)
+        
+        # Ensure all processes synchronize before saving
+        jax.block_until_ready(p_train_state)
+
+        # Save the final checkpoint from the main process only
         if jax.process_index() == 0:
-            print("\nSaving final checkpoint...")
-            ckpt_manager = ocp.CheckpointManager(CHECKPOINT_DIR, ocp.PyTreeCheckpointer())
-            # Recalculate final step based on the actual dataset size used
-            raw_dataset_size = len(load_dataset(DATASET_NAME, split=TRAIN_SPLIT))
-            num_train_steps_per_epoch = (int(raw_dataset_size * DATASET_PROPORTION) // (effective_batch_size * num_devices)) // GRADIENT_ACCUMULATION_STEPS
-            final_step = num_train_steps_per_epoch * NUM_EPOCHS
-            ckpt_manager.save(step=final_step, items=final_state)
+            if num_train_steps:
+                final_step = num_train_steps * NUM_EPOCHS
+                ckpt_manager.save(step=final_step, items=p_train_state)
+            else:
+                ckpt_manager.save(step="final", items=p_train_state)
             print("Final checkpoint saved.")
 
-    if jax.process_index() == 0:
-        print("\nTraining complete.")
+        if jax.process_index() == 0:
+            print("\nTraining complete.")
+
 
 if __name__ == "__main__":
     from finetuning.pretokenize_dataset import pretokenize_and_save

@@ -16,6 +16,8 @@ PRETOKENIZED_DATASET_DIR = REPO_ROOT / "pretokenized_dataset"
 
 DATASET_PROPORTION = 0.5
 
+
+
 # Finetuning Hyperparameters
 LEARNING_RATE = 1e-5
 # This is the PER-DEVICE batch size. The global batch size will be

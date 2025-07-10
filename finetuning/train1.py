@@ -1,11 +1,8 @@
-
-
-
 import jax
 import jax.numpy as jnp
 import optax
 import orbax.checkpoint as ocp
-from flax.training import train_state
+from flax.training import train_state  # Use the standard TrainState
 from tqdm import tqdm
 from pathlib import Path
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
@@ -23,18 +20,19 @@ from finetuning.config import (
     LEARNING_RATE,
     BATCH_SIZE,
     NUM_EPOCHS,
+    # GRADIENT_ACCUMULATION_STEPS is no longer needed
     CHECKPOINT_DIR,
     WEIGHT_DTYPE,
     DATASET_PROPORTION,
 )
 
-# Using the standard Flax TrainState, no custom accumulator needed.
-class TrainState(train_state.TrainState):
-    pass
+# Using the standard flax TrainState as we no longer need to store accumulated gradients.
+TrainState = train_state.TrainState
 
+# Loss function remains the same, can be jitted for performance.
 @jax.jit
 def calculate_loss(logits, labels):
-    """Calculates the cross-entropy loss."""
+    """Calculates the cross-entropy loss between logits and labels."""
     vocab_size = logits.shape[-1]
     logits_flat = logits.reshape(-1, vocab_size)
     labels_flat = labels.reshape(-1)
@@ -51,11 +49,12 @@ def calculate_loss(logits, labels):
 def train_step(state, batch, base_dropout_rng, step_num):
     """
     Performs a single training step.
-    Gradients are calculated and applied immediately in this version.
+    This function now calculates the loss, computes gradients, and applies them immediately.
     """
     step_dropout_key = jax.random.fold_in(base_dropout_rng, step_num)
 
     def loss_fn(params):
+        """The loss function to be differentiated."""
         logits = state.apply_fn(
             {"params": params},
             tokens=batch["input_ids"],
@@ -64,22 +63,24 @@ def train_step(state, batch, base_dropout_rng, step_num):
         )[0]
         return calculate_loss(logits, batch["labels"])
 
+    # Compute both the loss and the gradients in a single pass.
     grad_fn = jax.value_and_grad(loss_fn)
     loss, grads = grad_fn(state.params)
     
-    # Apply gradients immediately, no accumulation.
+    # Apply the gradients to update the model parameters.
     state = state.apply_gradients(grads=grads)
     
     return state, loss
 
 def print_training_summary(num_devices, effective_batch_size, raw_dataset_size):
-    """Prints a simplified summary of the training configuration."""
+    """Prints a summary of the training configuration."""
     global_batch_size = effective_batch_size * num_devices
+    
     examples_to_use = int(raw_dataset_size * DATASET_PROPORTION)
     num_train_steps_per_epoch = examples_to_use // global_batch_size
 
     print("\n" + "="*80)
-    print("TRAINING CONFIGURATION SUMMARY (NO GRADIENT ACCUMULATION)")
+    print("TRAINING CONFIGURATION SUMMARY (No Gradient Accumulation)")
     print("="*80)
     print(f"Number of accelerator devices: {num_devices}")
     print(f"Per-device batch size: {effective_batch_size}")
@@ -90,29 +91,27 @@ def print_training_summary(num_devices, effective_batch_size, raw_dataset_size):
     print(f"Number of epochs: {NUM_EPOCHS}")
     print("="*80 + "\n")
 
+
 def setup(mesh):
-    """Handles boilerplate setup for model, optimizer, and state."""
+    """Handles all the boilerplate setup for model, optimizer, and state."""
     if jax.process_index() == 0:
         print("Setting up model, optimizer, and sharded training state...")
 
-    # Define sharding rules
     data_sharding = NamedSharding(mesh, PartitionSpec('data_axis'))
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
 
     def get_param_sharding(param_pytree):
+        """Defines sharding rules for model parameters."""
         def get_spec(param):
             if param.ndim > 1 and param.size > 1_000_000:
                 return PartitionSpec(*([None] * (param.ndim - 1) + ['data_axis']))
             return PartitionSpec()
         return jax.tree.map(get_spec, param_pytree)
 
-    # 1. Create model, optimizer, and initial params on the host (CPU)
     model, _, params, _ = load_recurrent_gemma_model(
         CKPT_DIR, TOK_FILE, params_dtype=WEIGHT_DTYPE
     )
-    optimizer = optax.adafactor(learning_rate=LEARNING_RATE)
-
-    # Add scan sharding helper for the model
+    
     class ScanShardingHelper:
         def __init__(self, mesh):
             self.mesh = mesh
@@ -120,43 +119,53 @@ def setup(mesh):
             self.sequence_axis_index_groups = None
             self.activations_sharding_spec = PartitionSpec('data_axis')
             self.rnn_state_sharding_spec = PartitionSpec('data_axis')
+
     model.scan_sharding_spec = ScanShardingHelper(mesh=mesh)
 
-    # 2. Create the TrainState on the host
-    state = TrainState.create(
+    param_sharding_rules = get_param_sharding(params)
+
+    optimizer = optax.adafactor(learning_rate=LEARNING_RATE)
+    dummy_opt_state = optimizer.init(params)
+    if isinstance(dummy_opt_state, tuple):
+        opt_state_sharding_rules = tuple(get_param_sharding(s) for s in dummy_opt_state)
+    else:
+        opt_state_sharding_rules = get_param_sharding(dummy_opt_state)
+
+    # Sharding specification for the standard TrainState.
+    state_sharding_spec = TrainState(
+        step=PartitionSpec(),
         apply_fn=model.apply,
-        params=params,
+        params=param_sharding_rules,
+        tx=optimizer,
+        opt_state=opt_state_sharding_rules,
+    )
+
+    # Create TrainState without pjit first, then shard it
+    train_state = TrainState.create(
+        apply_fn=model.apply, 
+        params=params, 
         tx=optimizer
     )
-    del params # No longer needed on host
+    
+    # Now shard the created state
+    p_train_state = jax.device_put(train_state, NamedSharding(mesh, state_sharding_spec))
+    
+    del params, dummy_opt_state
 
-    # 3. Define the sharding specification for the TrainState
-    param_sharding_rules = get_param_sharding(state.params)
-    state_sharding_spec = TrainState(
-        step=replicated_sharding, # Replicate step counter
-        apply_fn=None, # Not a JAX array, so no sharding
-        params=param_sharding_rules,
-        tx=None, # Not a JAX array, so no sharding
-        opt_state=get_param_sharding(state.opt_state)
-    )
-
-    # 4. Move the state to the TPUs, applying the sharding rule
-    sharded_state = jax.device_put(state, state_sharding_spec)
-
-    # 5. pjit the training step
+    # pjit-compile the unified training step.
     p_train_step = pjit(
         train_step,
         in_shardings=(state_sharding_spec, data_sharding, replicated_sharding, replicated_sharding),
         out_shardings=(state_sharding_spec, replicated_sharding),
-        donate_argnums=(0,)
+        donate_argnums=(0,) # Donate the state buffer for in-place update.
     )
 
-    return sharded_state, p_train_step
+    return p_train_state, p_train_step
 
 def run_training_loop(state, p_train_step, train_dataset):
     """Executes the main training loop over epochs and steps."""
     if jax.process_index() == 0:
-        print("Starting training (no gradient accumulation)...")
+        print("Starting training...")
 
     rng = jax.random.PRNGKey(0)
     base_dropout_rng = jax.random.fold_in(rng, jax.process_index())
@@ -173,10 +182,13 @@ def run_training_loop(state, p_train_step, train_dataset):
         for step, batch in enumerate(pbar):
             batch = jax.tree_util.tree_map(lambda x: x.numpy(), batch)
             
+            # Perform a full training step (forward, backward, and optimizer update).
             state, loss = p_train_step(state, batch, base_dropout_rng, step)
-            
+
             if jax.process_index() == 0:
-                pbar.set_postfix(loss=f"{loss.mean().item():.4f}")
+                # Update the progress bar with the loss from the current step.
+                pbar.set_postfix(loss=f"{loss.item():.4f}")
+                pbar.update(1)
     
     return state
 
@@ -211,7 +223,9 @@ def main():
         if jax.process_index() == 0:
             print("\nSaving final checkpoint...")
             ckpt_manager = ocp.CheckpointManager(CHECKPOINT_DIR, ocp.PyTreeCheckpointer())
-            final_step = len(train_dataset) * NUM_EPOCHS
+            raw_dataset_size = len(load_dataset(DATASET_NAME, split=TRAIN_SPLIT))
+            num_train_steps_per_epoch = (int(raw_dataset_size * DATASET_PROPORTION) // (effective_batch_size * num_devices))
+            final_step = num_train_steps_per_epoch * NUM_EPOCHS
             ckpt_manager.save(step=final_step, items=final_state)
             print("Final checkpoint saved.")
 
