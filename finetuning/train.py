@@ -262,7 +262,22 @@ def main():
             # All processes must participate in this collective operation
             p_train_state = p_apply_grads(p_train_state)
         
+        # # Ensure all processes synchronize before saving
+        # jax.block_until_ready(p_train_state)
+
+        # # Save the final checkpoint from the main process only
+        # if jax.process_index() == 0:
+        #     if num_train_steps:
+        #         final_step = num_train_steps * NUM_EPOCHS
+        #         ckpt_manager.save(step=final_step, items=p_train_state)
+        #     else:
+        #         ckpt_manager.save(step="final", items=p_train_state)
+        #     print("Final checkpoint saved.")
+
+        # if jax.process_index() == 0:
+        #     print("\nTraining complete.")
         # Ensure all processes synchronize before saving
+        
         jax.block_until_ready(p_train_state)
 
         # Save the final checkpoint from the main process only
@@ -271,8 +286,13 @@ def main():
                 final_step = num_train_steps * NUM_EPOCHS
                 ckpt_manager.save(step=final_step, items=p_train_state)
             else:
+                # This is the branch your code is likely taking
                 ckpt_manager.save(step="final", items=p_train_state)
-            print("Final checkpoint saved.")
+            
+            # Add this line to wait for the save to complete
+            ckpt_manager.wait_until_finished()
+
+            print("Final checkpoint saved and write-operation confirmed.")
 
         if jax.process_index() == 0:
             print("\nTraining complete.")

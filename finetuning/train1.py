@@ -134,9 +134,9 @@ def setup(mesh):
     # Sharding specification for the standard TrainState.
     state_sharding_spec = TrainState(
         step=PartitionSpec(),
-        apply_fn=model.apply,
+        apply_fn=None,
         params=param_sharding_rules,
-        tx=optimizer,
+        tx=None,
         opt_state=opt_state_sharding_rules,
     )
 

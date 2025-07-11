@@ -24,8 +24,8 @@ LEARNING_RATE = 1e-5
 # BATCH_SIZE * jax.device_count().
 # A batch size of 4 with a sequence length of 2048 should be safe on a TPU v4.
 BATCH_SIZE = 4 # Per-device batch size. Reduced to 1 to prevent OOM errors.
-NUM_EPOCHS = 3
-MAX_SEQ_LEN = 2048 # Maximum sequence length for tokenization
+NUM_EPOCHS = 1
+MAX_SEQ_LEN = 128 # Maximum sequence length for tokenization
 
 GRADIENT_ACCUMULATION_STEPS = 64
 
