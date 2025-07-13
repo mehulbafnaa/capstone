@@ -37,8 +37,8 @@ class HeraldInferenceTester:
         print("Initializing RecurrentGemma model...")
 
         self.repo_root = SCRIPT_DIR
-        self.ckpt_dir = self.repo_root / "2b-it" / "2b-it"
-        self.tok_file = self.repo_root / "2b-it" / "tokenizer.model"
+        self.ckpt_dir = self.repo_root / "2b"
+        self.tok_file = self.repo_root / "2b"
         self.lean_project_path = self.repo_root / "lean_verifier"
 
         # The source code directory inside the Lean project is "LeanVerifier" (capitalized).
