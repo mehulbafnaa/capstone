@@ -13,12 +13,9 @@
 # import subprocess
 # import time
 # from pathlib import Path
-# from functools import partial
 
 # import jax
 # import jax.numpy as jnp
-# from jax.experimental.pjit import pjit
-# from jax.sharding import PartitionSpec as P
 # import orbax.checkpoint as ocp
 # import recurrentgemma.jax as rg
 # import sentencepiece as spm
@@ -26,7 +23,6 @@
 # from flax import jax_utils
 
 # # Initialize JAX's distributed environment at the very beginning.
-# # This is the most critical step for multi-worker execution.
 # jax.distributed.initialize()
 
 # # Get the absolute path of the directory containing this script.
@@ -49,7 +45,6 @@
 #         self.lean_project_path = self.repo_root / "lean_verifier"
 #         self.lean_src_path = self.lean_project_path / "LeanVerifier"
 
-#         # All processes verify paths to ensure consistency.
 #         if not self.ckpt_dir.exists():
 #             raise FileNotFoundError(f"Checkpoint directory not found at: {self.ckpt_dir}")
 #         if not self.tok_file.exists():
@@ -62,7 +57,6 @@
 
 #     def _load_model_and_sampler(self):
 #         """Load model, params, and create a pmap'd sampler for parallel inference."""
-#         # Load parameters on each host.
 #         restored = ocp.PyTreeCheckpointer().restore(str(self.ckpt_dir))
 #         self.params = restored.get("params", restored)
         
@@ -71,34 +65,22 @@
 #         self.model = rg.Griffin(cfg)
 #         self.vocab = spm.SentencePieceProcessor(model_file=str(self.tok_file))
 
-#         # --- JAX Parallelism Change ---
-#         # 1. Replicate model parameters across all devices (TPU cores).
 #         self.replicated_params = jax_utils.replicate(self.params)
 
-#         # 2. Create a sampler instance.
 #         sampler = rg.Sampler(
 #             model=self.model,
 #             vocab=self.vocab,
-#             params=self.replicated_params, # Use replicated params
+#             params=self.replicated_params,
 #             deterministic_sampling=True,
 #             is_it_model=True
 #         )
 
-#         # 3. Create a parallel version of the sampler function using pmap.
-#         #    pmap will run the function in parallel on all devices.
-#         self.pmapped_sampler = jax.pmap(
-#             sampler,
-#             # 'prompts' is sharded across devices, so each core gets one prompt.
-#             in_axes=(0), 
-#             # The output is not sharded, it will be gathered from all devices.
-#             out_axes=0
-#         )
+#         self.pmapped_sampler = jax.pmap(sampler, in_axes=(0), out_axes=0)
 
 #     def load_herald_examples(self, num_examples: int = 8):
-#         """Load examples from the dataset. Only process 0 does the download."""
-#         print(f"[Process {jax.process_index()}] Loading dataset...")
+#         """Load examples. Process 0 downloads and broadcasts to all."""
+#         print(f"[Process {jax.process_index()}] Preparing dataset...")
         
-#         # Ensure 'num_examples' is a multiple of the number of devices for easy sharding.
 #         if num_examples % jax.device_count() != 0:
 #             raise ValueError(
 #                 f"Number of examples ({num_examples}) must be a multiple of "
@@ -106,7 +88,6 @@
 #             )
 
 #         examples = []
-#         # Only the main process (0) downloads the data.
 #         if jax.process_index() == 0:
 #             try:
 #                 dataset = load_dataset("FrenzyMath/Herald_proofs", split="train", trust_remote_code=True)
@@ -119,12 +100,13 @@
 #             except Exception as e:
 #                 print(f"[Process 0] Error loading dataset: {e}")
         
-#         # Use JAX's utility to broadcast the data from process 0 to all other processes.
+#         # Broadcast the data from process 0 to all other processes.
+#         # This ensures every worker has the same list of examples.
 #         examples = jax_utils.broadcast_data_across_hosts(examples)
 #         return list(examples)
 
 #     def create_prompt(self, example: dict) -> str:
-#         """Create a standardized prompt for the model (no changes needed here)."""
+#         """Create a standardized prompt for the model."""
 #         return f"""Complete the following Lean 4 theorem proof by replacing 'sorry' with the actual proof tactics.
 
 # {example['header']}
@@ -134,33 +116,25 @@
 
 #     def run_inference_parallel(self, prompts: list, max_steps: int = 1000) -> dict:
 #         """Run inference in parallel on a BATCH of prompts."""
-#         print(f"[Process {jax.process_index()}] Running parallel inference on a batch of {len(prompts)} prompts...")
+#         print(f"[Process {jax.process_index()}] Starting parallel inference...")
 #         start_time = time.time()
         
 #         try:
-#             # --- JAX Parallelism Change ---
-#             # Reshape the prompts so they can be sharded by pmap.
-#             # (num_devices, num_prompts_per_device)
 #             num_devices = jax.local_device_count()
 #             prompt_batch = jnp.array(prompts).reshape((num_devices, -1))
 
-#             # Run the parallel sampler.
 #             result = self.pmapped_sampler(
 #                 prompt_batch,
 #                 total_generation_steps=max_steps
 #             )
-
-#             # The result is now a sharded device array. We need to flatten it.
-#             # .block_until_ready() is crucial to get an accurate time measurement.
 #             result.block_until_ready()
 #             inference_time = time.time() - start_time
             
-#             # Flatten the result from [num_devices, num_prompts_per_device] to a single list.
 #             generated_texts = result.text.flatten().tolist()
             
 #             return {
 #                 'success': True,
-#                 'generated_texts': generated_texts, # Returns a list of texts
+#                 'generated_texts': generated_texts,
 #                 'inference_time': inference_time
 #             }
 #         except Exception as e:
@@ -171,7 +145,7 @@
 #             }
 
 #     def verify_with_lean_compiler(self, full_code: str, example_name: str) -> dict:
-#         """Verification logic remains the same, but should only be run on process 0."""
+#         """Verification logic. Runs only on process 0."""
 #         proof_block = full_code.split(':= by', 1)[-1]
 #         if 'sorry' in proof_block:
 #             print("❌ Verification failed: Model used the 'sorry' tactic.")
@@ -201,42 +175,37 @@
 
 #     def run_test_suite(self):
 #         """Run the complete distributed test suite."""
-#         # Only process 0 prints the main headers.
 #         if jax.process_index() == 0:
 #             print("\n" + "=" * 80)
 #             print("Starting Herald Proofs DISTRIBUTED Inference & Verification")
 #             print("=" * 80)
         
-#         # Let's test on 8 examples to utilize a v4-16 (8 cores) fully.
+#         # 1. All processes get the same full list of examples.
 #         examples = self.load_herald_examples(num_examples=jax.device_count())
+        
 #         if not examples:
 #             if jax.process_index() == 0:
 #                 print("No examples loaded. Exiting.")
 #             return
 
-#         # All processes create the prompts for the data they received.
+#         # 2. All processes create the prompts for all examples.
 #         prompts = [self.create_prompt(ex) for ex in examples]
 
-#         # Run inference in parallel. This function is internally aware of all devices.
+#         # 3. All processes must call the pmapped function.
 #         inference_result = self.run_inference_parallel(prompts)
         
-#         # --- Gather and Process Results on Main Host ---
-#         # The rest of the logic (verification, summary) runs only on process 0.
+#         # 4. Verification and summarization happens only on process 0.
 #         if jax.process_index() == 0:
+#             print(f"\nParallel inference completed in {inference_result['inference_time']:.2f}s")
+            
 #             results_data = []
 #             if inference_result['success']:
-#                 print(f"\nParallel inference completed for {len(examples)} examples in {inference_result['inference_time']:.2f}s")
-                
-#                 # Iterate through results and verify each one
 #                 for i, generated_text in enumerate(inference_result['generated_texts']):
 #                     example = examples[i]
 #                     print(f"\n--- Verifying EXAMPLE {i+1}/{len(examples)}: {example['name']} ---")
-
 #                     verification_result = self.verify_with_lean_compiler(generated_text, example['name'])
-                    
 #                     results_data.append({
 #                         'example': example,
-#                         'generated_text': generated_text,
 #                         'verified': verification_result['verified'],
 #                     })
 #             else:
@@ -253,23 +222,18 @@
 #         verified_runs = [r for r in results if r.get('verified')]
 #         print(f"Total examples tested: {len(results)}")
 #         print(f"Successfully generated and verified proofs: {len(verified_runs)}/{len(results)}")
-
-#         print("\nIndividual Results:")
-#         for i, result in enumerate(results, 1):
-#             status = "✅ VERIFIED" if result.get('verified') else "❌ FAILED"
-#             print(f"  {i}. {result['example']['name']}: {status}")
 #         print("=" * 80)
-
 
 # def main():
 #     """Main execution function for the script."""
 #     try:
 #         tester = HeraldInferenceTester()
 #         tester.run_test_suite()
+#         # Barrier ensures all processes finish before the script exits.
+#         jax.pmap(lambda x: x)(jnp.ones(jax.local_device_count()))
 #         if jax.process_index() == 0:
 #             print("\nTest suite completed!")
 #     except Exception as e:
-#         # Print error on the process that failed.
 #         print(f"\nA fatal error occurred in main on process {jax.process_index()}: {e}")
 #         import traceback
 #         traceback.print_exc()
@@ -287,11 +251,6 @@
 """
 Lean Proofs Model Inference & Verification Script
 (Refactored for Multi-Worker TPU Execution)
-
-This script loads examples from the Herald Proofs dataset, runs inference
-using a RecurrentGemma model in parallel across multiple TPU workers using JAX,
-and then uses the Lean 4 compiler to formally verify the correctness of the
-generated proof on a single host.
 """
 
 import subprocess
@@ -316,7 +275,6 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 class HeraldInferenceTester:
     """
     Tests and verifies a RecurrentGemma model on Herald Proofs dataset examples.
-    This class is configured for multi-worker TPU execution.
     """
 
     def __init__(self):
@@ -362,8 +320,11 @@ class HeraldInferenceTester:
         self.pmapped_sampler = jax.pmap(sampler, in_axes=(0), out_axes=0)
 
     def load_herald_examples(self, num_examples: int = 8):
-        """Load examples. Process 0 downloads and broadcasts to all."""
-        print(f"[Process {jax.process_index()}] Preparing dataset...")
+        """Load examples. Only process 0 downloads the data."""
+        if jax.process_index() != 0:
+            return [] # Other processes return an empty list
+
+        print(f"[Process 0] Preparing dataset...")
         
         if num_examples % jax.device_count() != 0:
             raise ValueError(
@@ -371,23 +332,15 @@ class HeraldInferenceTester:
                 f"the number of devices ({jax.device_count()})."
             )
 
-        examples = []
-        if jax.process_index() == 0:
-            try:
-                dataset = load_dataset("FrenzyMath/Herald_proofs", split="train", trust_remote_code=True)
-                df = dataset.to_pandas().sample(frac=1).reset_index(drop=True)
-                examples_data = df.head(num_examples)
-                
-                for _, row in examples_data.iterrows():
-                    examples.append(row.to_dict())
-                print(f"  [Process 0] Loaded {len(examples)} examples.")
-            except Exception as e:
-                print(f"[Process 0] Error loading dataset: {e}")
-        
-        # Broadcast the data from process 0 to all other processes.
-        # This ensures every worker has the same list of examples.
-        examples = jax_utils.broadcast_data_across_hosts(examples)
-        return list(examples)
+        try:
+            dataset = load_dataset("FrenzyMath/Herald_proofs", split="train", trust_remote_code=True)
+            df = dataset.to_pandas().sample(frac=1).reset_index(drop=True)
+            examples = [row.to_dict() for _, row in df.head(num_examples).iterrows()]
+            print(f"  [Process 0] Loaded {len(examples)} examples.")
+            return examples
+        except Exception as e:
+            print(f"[Process 0] Error loading dataset: {e}")
+            return []
 
     def create_prompt(self, example: dict) -> str:
         """Create a standardized prompt for the model."""
@@ -459,27 +412,24 @@ class HeraldInferenceTester:
 
     def run_test_suite(self):
         """Run the complete distributed test suite."""
+        # This block now only runs on process 0.
         if jax.process_index() == 0:
             print("\n" + "=" * 80)
             print("Starting Herald Proofs DISTRIBUTED Inference & Verification")
             print("=" * 80)
-        
-        # 1. All processes get the same full list of examples.
-        examples = self.load_herald_examples(num_examples=jax.device_count())
-        
-        if not examples:
-            if jax.process_index() == 0:
+
+            examples = self.load_herald_examples(num_examples=jax.device_count())
+            if not examples:
                 print("No examples loaded. Exiting.")
-            return
+                return
 
-        # 2. All processes create the prompts for all examples.
-        prompts = [self.create_prompt(ex) for ex in examples]
-
-        # 3. All processes must call the pmapped function.
-        inference_result = self.run_inference_parallel(prompts)
-        
-        # 4. Verification and summarization happens only on process 0.
-        if jax.process_index() == 0:
+            prompts = [self.create_prompt(ex) for ex in examples]
+            
+            # Since prompts only exist on process 0, we pass them to the parallel
+            # function, and pmap handles the distribution to all devices.
+            inference_result = self.run_inference_parallel(prompts)
+            
+            # Verification and summarization happens after results are gathered.
             print(f"\nParallel inference completed in {inference_result['inference_time']:.2f}s")
             
             results_data = []
@@ -510,20 +460,19 @@ class HeraldInferenceTester:
 
 def main():
     """Main execution function for the script."""
-    try:
-        tester = HeraldInferenceTester()
+    # All processes initialize the class to load the model onto their devices.
+    tester = HeraldInferenceTester()
+    
+    # Only process 0 orchestrates the test suite.
+    if jax.process_index() == 0:
         tester.run_test_suite()
-        # Barrier ensures all processes finish before the script exits.
-        jax.pmap(lambda x: x)(jnp.ones(jax.local_device_count()))
-        if jax.process_index() == 0:
-            print("\nTest suite completed!")
-    except Exception as e:
-        print(f"\nA fatal error occurred in main on process {jax.process_index()}: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
-    return 0
 
+    # Barrier to ensure all processes finish before exiting.
+    # This prevents process 0 from finishing while others might still be working.
+    jax.pmap(lambda x: x)(jnp.ones(jax.local_device_count()))
+    
+    if jax.process_index() == 0:
+        print("\nTest suite completed!")
 
 if __name__ == "__main__":
     exit(main())
