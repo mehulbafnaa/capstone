@@ -346,7 +346,7 @@ import orbax.checkpoint as ocp
 import recurrentgemma.jax as rg
 import sentencepiece as spm
 from datasets import load_dataset
-from flax.training import jax_utils
+from flax import jax_utils
 
 # Initialize JAX's distributed environment at the very beginning.
 # This is the most critical step for multi-worker execution.
