@@ -314,7 +314,7 @@ class HeraldInferenceTester:
             vocab=self.vocab,
             params=self.replicated_params,
             deterministic_sampling=True,
-            is_it_model=True
+            is_it_model=False
         )
 
         self.pmapped_sampler = jax.pmap(sampler, in_axes=(0), out_axes=0)
