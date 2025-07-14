@@ -55,7 +55,7 @@ class RecurrentGemmaService:
         self.pmapped_generate = jax.pmap(
             self.sampler,
             in_axes=(0, None),
-            static_argnums=(1,)
+            static_broadcasted_argnums=(1,)
         )
 
     def generate(self, prompts: list[str], max_steps: int) -> list[str]:
