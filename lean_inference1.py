@@ -264,7 +264,8 @@ import recurrentgemma.jax as rg
 import sentencepiece as spm
 from datasets import load_dataset
 from flax import jax_utils
-
+import tpu_profiler
+import traceback
 # Initialize JAX's distributed environment at the very beginning.
 jax.distributed.initialize()
 
@@ -344,12 +345,8 @@ class HeraldInferenceTester:
 
     def create_prompt(self, example: dict) -> str:
         """Create a standardized prompt for the model."""
-        return f"""Complete the following Lean 4 theorem proof by replacing 'sorry' with the actual proof tactics.
-
-{example['header']}
-
-{example['formal_theorem']} := by
-  sorry"""
+    # This corrected version avoids duplicating ':= by sorry'
+        return f"""Complete the following Lean 4 theorem proof by replacing 'sorry' with the actual proof tactics.{example['formal_theorem']}"""
 
     def run_inference_parallel(self, prompts: list, max_steps: int = 1000) -> dict:
         """Run inference in parallel on a BATCH of prompts."""
@@ -495,7 +492,7 @@ def main():
 
     except Exception as e:
         print(f"\nA fatal error occurred in main on process {jax.process_index()}: {e}")
-        import traceback
+        # import traceback
         traceback.print_exc()
         return 1
     return 0
