@@ -285,7 +285,7 @@ class HeraldInferenceTester:
         self.replicated_params = jax_utils.replicate(self.params)
 
         def generate_fn(params, tokenized_prompts, total_generation_steps):
-            return rg.Griffin.generate(
+            return rg.generate(
                 prompt_tokens=tokenized_prompts,
                 params=params,
                 config=self.cfg,
