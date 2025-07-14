@@ -177,6 +177,10 @@ class HeraldInferenceTester:
         start_time = time.time()
 
         try:
+            # Temporarily disable JAX array string representation to avoid triggering the error
+            original_str_format = jax.config.jax_array_str_format
+            jax.config.update('jax_array_str_format', 'summarized')
+            
             self.sampler.total_generation_steps = max_steps
             tokenized_prompts = [self.vocab.encode(p, add_bos=True) for p in prompts]
             max_prompt_len = max(len(t) for t in tokenized_prompts)
@@ -186,15 +190,21 @@ class HeraldInferenceTester:
                 for t in tokenized_prompts
             ])
 
+            # Use proper sharding - ensure the batch dimension is sharded
             sharding = jsh.NamedSharding(self.mesh, jsh.PartitionSpec('data'))
             sharded_tokens = jax.device_put(input_tokens, sharding)
             rng = jax.random.PRNGKey(0)
 
             # Generate distributed output tokens
+            # Use jax.block_until_ready to ensure computation is complete before proceeding
+            self.log("Starting model inference...")
             output_tokens = self.sampler.sample_fn(self.params, rng, sharded_tokens)
+            output_tokens = jax.block_until_ready(output_tokens)
+            self.log("Model inference completed, gathering results...")
 
             # *** CRITICAL FIX for Multi-Host ***
             # First gather the distributed array across all processes
+            # This is the ONLY safe way to access distributed arrays
             gathered_tokens = process_allgather(output_tokens)
             
             # Now safely convert to Python list and decode
@@ -203,13 +213,16 @@ class HeraldInferenceTester:
             
             # Decode each sequence of tokens to text
             generated_texts = []
-            for tokens in token_lists:
+            for i, tokens in enumerate(token_lists):
                 try:
                     decoded_text = self.vocab.decode(tokens)
                     generated_texts.append(decoded_text)
                 except Exception as decode_error:
-                    self.log(f"Warning: Failed to decode tokens {tokens[:10]}...: {decode_error}", level="warning")
+                    self.log(f"Warning: Failed to decode tokens for sequence {i}: {decode_error}", level="warning")
                     generated_texts.append("")
+            
+            # Restore original JAX configuration
+            jax.config.update('jax_array_str_format', original_str_format)
             
             inference_time = time.time() - start_time
             return {
@@ -219,6 +232,8 @@ class HeraldInferenceTester:
             }
 
         except Exception as e:
+            # Restore original JAX configuration in case of error
+            jax.config.update('jax_array_str_format', original_str_format)
             self.log(f"Inference failed: {e}", level="error")
             if jax.process_index() == 0:
                 logging.exception("Detailed inference traceback:")
