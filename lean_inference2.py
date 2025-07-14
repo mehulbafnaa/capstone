@@ -299,14 +299,12 @@
 
 
 
-
-
 #!/usr/bin/env python3
 """
 Herald Proofs Model Inference Test (TPU v4-16 Optimized)
 
-This script loads examples, generates proofs using a custom JAX sampling loop,
-and automatically verifies them using an external Lean verifier tool.
+This script loads examples, generates proofs using the library's correct
+sampling function with sharded inputs, and automatically verifies them.
 """
 
 import json
@@ -329,9 +327,9 @@ class HeraldInferenceTester:
     Test RecurrentGemma model on Herald Proofs dataset examples
     """
 
-    def __init__(self, ckpt_dir: str = "2b/2b", tok_file: str = "2b/tokenizer.model"):
+    def __init__(self, ckpt_dir: str = "2b-it/2b-it", tok_file: str = "2b-it/tokenizer.model"):
         """Initialize the model, tokenizer, and JAX device mesh."""
-        print("Initializing RecurrentGemma model.")
+        print("Initializing RecurrentGemma model... 🚀")
 
         script_dir = Path(__file__).resolve().parent
         self.verifier_path = script_dir / 'lean_verifier'
@@ -345,87 +343,61 @@ class HeraldInferenceTester:
         print("Model loaded successfully!")
 
     def _load_model_and_prepare(self):
-        """Loads the model and shards the parameters."""
+        """Loads the model, creates a sampler, and shards the parameters."""
         restored = ocp.PyTreeCheckpointer().restore(str(self.ckpt_dir))
         params = restored.get("params", restored)
         preset = rg.Preset.RECURRENT_GEMMA_2B_V1
         cfg = rg.GriffinConfig.from_flax_params_or_variables(params, preset=preset)
+        
         self.model = rg.Griffin(cfg)
         self.vocab = spm.SentencePieceProcessor(model_file=str(self.tok_file))
+
+        # The Sampler object contains the correct, pre-compiled sample_fn
+        self.sampler = rg.Sampler(
+            model=self.model,
+            vocab=self.vocab,
+            params=params, # Pass unsharded params here; we'll use a sharded copy for the call
+        )
+
         with self.mesh:
+            # Shard the parameters for parallel execution
             replicated_sharding = jsh.NamedSharding(self.mesh, jsh.PartitionSpec())
             self.params = jax.device_put(params, replicated_sharding)
 
     def run_inference(self, prompts: list[str], max_steps: int = 1000):
-        """Run batched inference on a list of prompts using a custom sampling loop."""
+        """Run batched inference by calling the sampler's pre-compiled function with sharded inputs."""
         print(f"Running inference on a batch of {len(prompts)} prompts...")
         start_time = time.time()
 
-        # --- Define the custom sampling loop ---
-        def sampling_step(params, tokens, cache, index):
-            """A single step of the sampling process."""
-            model_outputs = self.model.apply({'params': params, 'cache': cache}, tokens, index)
-            logits = model_outputs.logits
-            new_cache = model_outputs.cache
-            return logits, new_cache
-
-        def sampling_loop(params, tokens, total_generation_steps):
-            """The full generation loop, implemented with jax.lax.scan for performance."""
-            # Initialize the cache for the recurrent model
-            cache = self.model.init_cache(tokens.shape[0], dtype=params['embedder']['input_embedding'].dtype)
-
-            def one_step(carry, index):
-                """The body of the scan loop."""
-                cache, tokens = carry
-                logits, new_cache = sampling_step(params, tokens, cache, index)
-                
-                # For deterministic sampling, just take the most likely token
-                next_token = jnp.argmax(logits, axis=-1)
-                
-                # Update the token sequence for the next iteration
-                # We use a dynamic slice update which is efficient under JIT.
-                if index + 1 < tokens.shape[1]:
-                    tokens = tokens.at[:, index + 1].set(next_token)
-                
-                return (new_cache, tokens), None
-            
-            # Use jax.lax.scan to perform the autoregressive loop
-            # This is much more efficient than a Python for-loop when JIT-compiled.
-            initial_prompt_len = tokens.shape[1]
-            indices = jnp.arange(initial_prompt_len - 1, initial_prompt_len + total_generation_steps - 1)
-            
-            (_, final_tokens), _ = jax.lax.scan(one_step, (cache, tokens), indices)
-            return final_tokens
-
         try:
-            # --- JIT-compile the loop with a static argument for the loop length ---
-            jitted_sampling_loop = jax.jit(
-                sampling_loop,
-                static_argnums=(2,),  # Treat total_generation_steps (arg 2) as static
-                in_shardings=(
-                    jsh.NamedSharding(self.mesh, jsh.PartitionSpec()),  # params are replicated
-                    jsh.NamedSharding(self.mesh, jsh.PartitionSpec('data')),  # tokens are sharded by batch
-                ),
-                out_shardings=jsh.NamedSharding(self.mesh, jsh.PartitionSpec('data'))
-            )
-
-            tokenized_prompts = [self.vocab.encode(p, add_bos=True) for p in prompts]
-            max_prompt_len = max(len(t) for t in tokenized_prompts)
+            # This sets the generation length for the sampler's internal logic
+            self.sampler.total_generation_steps = max_steps
             
-            # Pad tokens not just to the max prompt length, but with space for generation
-            total_len = max_prompt_len + max_steps
-            padded_tokens = jnp.array([
-                t + [self.vocab.pad_id()] * (total_len - len(t)) for t in tokenized_prompts
-            ])
+            tokenized_prompts = [self.vocab.encode(p, add_bos=True) for p in prompts]
+            
+            # Prepare the input tokens
+            input_tokens = self.sampler._prepare_input_tokens_for_sampling(tokenized_prompts)
 
-            # Run the JIT-compiled generation function
-            output_tokens = jitted_sampling_loop(self.params, padded_tokens, max_steps)
+            # Define sharding for the batch axis
+            sharding = jsh.NamedSharding(self.mesh, jsh.PartitionSpec('data'))
+            
+            # Put the input tokens onto the devices with the correct sharding
+            sharded_tokens = jax.device_put(input_tokens, sharding)
+
+            rng = jax.random.PRNGKey(0)
+
+            # Call the sampler's pre-compiled function directly.
+            # JAX will automatically run this in parallel because the inputs are sharded.
+            output_tokens = self.sampler.sample_fn(
+                self.params, # Use the sharded copy of params
+                rng,
+                sharded_tokens,
+            )
 
             generated_texts = self.vocab.decode(output_tokens.tolist())
             inference_time = time.time() - start_time
             return {'success': True, 'generated_texts': generated_texts, 'inference_time': inference_time}
         except Exception as e:
-            # Print the full traceback for easier debugging of JAX errors
             import traceback
             traceback.print_exc()
             return {'success': False, 'error': str(e), 'inference_time': time.time() - start_time}
