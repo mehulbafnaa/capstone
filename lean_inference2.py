@@ -94,6 +94,83 @@ class HeraldInferenceTester:
             replicated_sharding = jsh.NamedSharding(self.mesh, jsh.PartitionSpec())
             self.params = jax.device_put(params, replicated_sharding)
 
+    # def run_inference(self, prompts: List[str], max_steps: int) -> Dict[str, Any]:
+    #     """Runs batched inference and gathers results from all workers."""
+    #     self.log(f"Running inference on a batch of {len(prompts)} prompts...")
+    #     start_time = time.time()
+
+    #     try:
+    #         self.sampler.total_generation_steps = max_steps
+    #         tokenized_prompts = [self.vocab.encode(p, add_bos=True) for p in prompts]
+    #         max_prompt_len = max(len(t) for t in tokenized_prompts)
+    #         total_len = max_prompt_len + max_steps
+    #         input_tokens = jnp.array([
+    #             t + [self.vocab.pad_id()] * (total_len - len(t))
+    #             for t in tokenized_prompts
+    #         ])
+
+    #         sharding = jsh.NamedSharding(self.mesh, jsh.PartitionSpec('data'))
+    #         sharded_tokens = jax.device_put(input_tokens, sharding)
+    #         rng = jax.random.PRNGKey(0)
+
+    #         # Generate distributed output tokens
+    #         output_tokens = self.sampler.sample_fn(self.params, rng, sharded_tokens)
+
+    #         # *** CRITICAL FIX for Multi-Host ***
+    #         # First gather the distributed array across all processes
+    #         gathered_tokens = process_allgather(output_tokens)
+            
+    #         # Now safely convert to Python list and decode
+    #         # Only do this on the main process to avoid redundant work
+    #         if jax.process_index() == 0:
+    #             # Convert the gathered JAX array to a Python list
+    #             token_lists = gathered_tokens.tolist()
+    #             # Decode each sequence of tokens to text
+    #             generated_texts = []
+    #             for tokens in token_lists:
+    #                 try:
+    #                     decoded_text = self.vocab.decode(tokens)
+    #                     generated_texts.append(decoded_text)
+    #                 except Exception as decode_error:
+    #                     self.log(f"Warning: Failed to decode tokens {tokens[:10]}...: {decode_error}", level="warning")
+    #                     generated_texts.append("")
+    #         else:
+    #             # Non-main processes get empty list
+    #             generated_texts = []
+            
+    #         # Broadcast the decoded texts to all processes so they all have the same data
+    #         # This ensures consistent behavior across all processes
+    #         try:
+    #             from jax.experimental.multihost_utils import broadcast_one_to_all
+    #             if jax.process_index() == 0:
+    #                 # Main process broadcasts the generated texts
+    #                 generated_texts = broadcast_one_to_all(generated_texts)
+    #             else:
+    #                 # Other processes receive the broadcasted texts
+    #                 generated_texts = broadcast_one_to_all(None)
+    #         except ImportError:
+    #             # Fallback: if broadcast_one_to_all is not available, 
+    #             # only main process will have the texts
+    #             if jax.process_index() != 0:
+    #                 generated_texts = []
+            
+    #         inference_time = time.time() - start_time
+    #         return {
+    #             'success': True, 
+    #             'generated_texts': generated_texts, 
+    #             'inference_time': inference_time
+    #         }
+
+    #     except Exception as e:
+    #         self.log(f"Inference failed: {e}", level="error")
+    #         if jax.process_index() == 0:
+    #             logging.exception("Detailed inference traceback:")
+    #         return {
+    #             'success': False, 
+    #             'error': str(e), 
+    #             'inference_time': time.time() - start_time
+    #         }
+
     def run_inference(self, prompts: List[str], max_steps: int) -> Dict[str, Any]:
         """Runs batched inference and gathers results from all workers."""
         self.log(f"Running inference on a batch of {len(prompts)} prompts...")
@@ -121,38 +198,18 @@ class HeraldInferenceTester:
             gathered_tokens = process_allgather(output_tokens)
             
             # Now safely convert to Python list and decode
-            # Only do this on the main process to avoid redundant work
-            if jax.process_index() == 0:
-                # Convert the gathered JAX array to a Python list
-                token_lists = gathered_tokens.tolist()
-                # Decode each sequence of tokens to text
-                generated_texts = []
-                for tokens in token_lists:
-                    try:
-                        decoded_text = self.vocab.decode(tokens)
-                        generated_texts.append(decoded_text)
-                    except Exception as decode_error:
-                        self.log(f"Warning: Failed to decode tokens {tokens[:10]}...: {decode_error}", level="warning")
-                        generated_texts.append("")
-            else:
-                # Non-main processes get empty list
-                generated_texts = []
+            # Convert the gathered JAX array to a Python list
+            token_lists = gathered_tokens.tolist()
             
-            # Broadcast the decoded texts to all processes so they all have the same data
-            # This ensures consistent behavior across all processes
-            try:
-                from jax.experimental.multihost_utils import broadcast_one_to_all
-                if jax.process_index() == 0:
-                    # Main process broadcasts the generated texts
-                    generated_texts = broadcast_one_to_all(generated_texts)
-                else:
-                    # Other processes receive the broadcasted texts
-                    generated_texts = broadcast_one_to_all(None)
-            except ImportError:
-                # Fallback: if broadcast_one_to_all is not available, 
-                # only main process will have the texts
-                if jax.process_index() != 0:
-                    generated_texts = []
+            # Decode each sequence of tokens to text
+            generated_texts = []
+            for tokens in token_lists:
+                try:
+                    decoded_text = self.vocab.decode(tokens)
+                    generated_texts.append(decoded_text)
+                except Exception as decode_error:
+                    self.log(f"Warning: Failed to decode tokens {tokens[:10]}...: {decode_error}", level="warning")
+                    generated_texts.append("")
             
             inference_time = time.time() - start_time
             return {
