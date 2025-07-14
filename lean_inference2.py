@@ -806,7 +806,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run RecurrentGemma inference on Herald Proofs.")
     parser.add_argument("--ckpt_dir", type=Path, default=Path("2b/2b"), help="Path to the model checkpoint directory.")
     parser.add_argument("--tok_path", type=Path, default=Path("2b/tokenizer.model"), help="Path to the tokenizer.model file.")
-    parser.add_argument("--verifier_path", type=Path, default=Path.home() / "lean_verifier", help="Path to the Lean verifier project directory.")
+    parser.add_argument("--verifier_path", type=Path, default=Path.home() / "capstone/lean_verifier", help="Path to the Lean verifier project directory.")
     parser.add_argument("--num_examples", type=int, default=3, help="Number of examples to test from the dataset.")
     parser.add_argument("--max_steps", type=int, default=1000, help="Maximum number of tokens to generate.")
     args = parser.parse_args()
