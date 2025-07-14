@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Lean Proofs Model Inference & Verification Script
-(Elegantly Refactored and Enhanced with Robust Verification)
+(Correctly Refactored for Modularity and Data Flow)
 """
 
 import subprocess
@@ -23,6 +23,16 @@ import tpu_profiler
 # Initialize JAX's distributed environment at the very beginning.
 jax.distributed.initialize()
 
+# This is a static function, making it cleaner to pmap.
+# It takes the replicated model parameters and a batch of sharded tokens.
+def pmapped_generate_from_tokens(params, tokenized_prompts, total_generation_steps):
+    # This is the core model's generate method, which expects tokens.
+    return rg.Griffin.generate(
+        tokenized_prompts,
+        params=params,
+        total_generation_steps=total_generation_steps,
+    )
+
 class RecurrentGemmaService:
     def __init__(self, ckpt_dir: Path, tok_file: Path):
         print(f"[Process {jax.process_index()}] Initializing RecurrentGemma model...")
@@ -31,47 +41,45 @@ class RecurrentGemmaService:
         if not tok_file.is_file():
             raise FileNotFoundError(f"Tokenizer file not found: {tok_file}")
 
-        self._load_model_and_sampler(ckpt_dir, tok_file)
-        self._setup_pmap()
-        print(f"[Process {jax.process_index()}] Model and sampler loaded successfully!")
+        self._load_model_and_setup_pmap(ckpt_dir, tok_file)
+        print(f"[Process {jax.process_index()}] Model and pmapped function ready!")
 
-    def _load_model_and_sampler(self, ckpt_dir: Path, tok_file: Path):
+    def _load_model_and_setup_pmap(self, ckpt_dir: Path, tok_file: Path):
         restored = ocp.PyTreeCheckpointer().restore(str(ckpt_dir))
         params = restored.get("params", restored)
+        self.replicated_params = jax_utils.replicate(params)
         
-        preset = rg.Preset.RECURRENT_GEMMA_2B_V1
-        cfg = rg.GriffinConfig.from_flax_params_or_variables(params, preset=preset)
-        model = rg.Griffin(cfg)
         self.vocab = spm.SentencePieceProcessor(model_file=str(tok_file))
 
-        self.sampler = rg.Sampler(
-            model=model,
-            params=jax_utils.replicate(params),
-            vocab=self.vocab,
-            is_it_model=False # Specify we are using an instruction-tuned model
-        )
-
-    def _setup_pmap(self):
-        self.pmapped_generate = jax.pmap(
-            self.sampler,
-            in_axes=(0, None),
-            static_broadcasted_argnums=(1,)
+        # pmap the static generation function.
+        self.generate_fn = jax.pmap(
+            pmapped_generate_from_tokens,
+            # in_axes corresponds to (params, prompts, steps)
+            in_axes=(0, 0, None),
+            static_broadcasted_argnums=(2,) # max_steps is static
         )
 
     def generate(self, prompts: list[str], max_steps: int) -> list[str]:
-        """Runs parallel inference on a batch of prompts."""
+        """
+        Handles the CPU-side work: tokenization and data preparation,
+        then calls the pmapped function.
+        """
+        # 1. Tokenize on CPU
         tokenized_prompts = self.vocab.encode(prompts)
         max_len = max(len(p) for p in tokenized_prompts)
         padded_prompts = np.array(
             [p + [self.vocab.pad_id()] * (max_len - len(p)) for p in tokenized_prompts]
         )
         
+        # 2. Reshape for devices
         num_devices = jax.local_device_count()
         prompt_batch = padded_prompts.reshape((num_devices, -1, max_len))
 
-        result_tokens = self.pmapped_generate(prompt_batch, max_steps)
+        # 3. Call the pmapped function with tokens
+        result_tokens = self.generate_fn(self.replicated_params, prompt_batch, max_steps)
         result_tokens.block_until_ready()
         
+        # 4. Detokenize on CPU
         result_tokens_flat = result_tokens.reshape(-1, result_tokens.shape[-1])
         return self.vocab.decode(result_tokens_flat.tolist())
 
@@ -83,10 +91,6 @@ class LeanVerifier:
             raise FileNotFoundError(f"Lean source directory not found: {self.lean_src_path}")
 
     def verify(self, lean_code: str, proof_name: str) -> dict:
-        """
-        Verifies a string of Lean code using the robust logic from the reference script.
-        """
-        # Targeted 'sorry' check
         if ':= by' in lean_code:
             proof_block = lean_code.split(':= by', 1)[-1]
             if 'sorry' in proof_block:
@@ -103,7 +107,7 @@ class LeanVerifier:
                 ['lake', 'build'],
                 cwd=self.lean_project_path,
                 capture_output=True, text=True,
-                timeout=120  # Add a 2-minute timeout
+                timeout=120
             )
             return {
                 'verified': proc.returncode == 0,
@@ -114,7 +118,6 @@ class LeanVerifier:
         except Exception as e:
             return {'verified': False, 'output': str(e)}
         finally:
-            # Guaranteed cleanup
             if temp_lean_file.exists():
                 temp_lean_file.unlink()
 
@@ -134,16 +137,10 @@ class HeraldTestSuite:
             return None
 
     def _create_prompt(self, example: dict) -> str:
-        """Adopt the superior instruction-tuned prompt."""
-        return f"""Complete the following Lean 4 theorem proof by replacing 'sorry' with the actual proof tactics.
-
-{example['header']}
-
-{example['formal_theorem']} := by
-  sorry"""
+        full_theorem = example.get('formal_theorem', '')
+        return full_theorem.split(':= by', 1)[0] + ":=" if ':= by' in full_theorem else full_theorem
 
     def run(self, num_examples: int, max_steps: int):
-        """Runs the complete test suite. Orchestrated by process 0."""
         if jax.process_index() != 0: return
 
         print("\n" + "=" * 80 + "\nStarting Herald Proofs DISTRIBUTED Inference & Verification\n" + "=" * 80)
@@ -198,7 +195,6 @@ def main():
     parser = argparse.ArgumentParser(description="RecurrentGemma Lean Proof Inference & Verification")
     script_dir = Path(__file__).parent.resolve()
     
-    # Updated default paths to match the reference script
     parser.add_argument("--ckpt_dir", type=Path, default=script_dir / "2b/2b")
     parser.add_argument("--tok_file", type=Path, default=script_dir / "2b/tokenizer.model")
     parser.add_argument("--lean_project_path", type=Path, default=script_dir / "lean_verifier")
