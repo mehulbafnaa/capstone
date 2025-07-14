@@ -285,7 +285,7 @@ class HeraldInferenceTester:
     Test RecurrentGemma model on Herald Proofs dataset examples
     """
 
-    def __init__(self, ckpt_dir: str = "2b-it/2b-it", tok_file: str = "2b-it/tokenizer.model"):
+    def __init__(self, ckpt_dir: str = "2b/2b", tok_file: str = "2b/tokenizer.model"):
         """Initialize the model, tokenizer, and JAX device mesh."""
         if jax.process_index() == 0:
             print("Initializing RecurrentGemma model... 🚀")
