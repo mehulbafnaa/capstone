@@ -1,4 +1,17 @@
 [
   {
     "example_name": "ENNReal.inv_ne_zero",
-    "example_id": 
+    "example_id": 32,
+    "error": "Non-hashable static arguments are not supported. An error occurred while trying to hash an object of type <class 'jax._src.interpreters.partial_eval.DynamicJaxprTracer'>, Traced<int32[8,420]>with<DynamicJaxprTrace>. The error was:\nTypeError: unhashable type: 'DynamicJaxprTracer'\n"
+  },
+  {
+    "example_name": "InitialSeg.eq",
+    "example_id": 0,
+    "error": "Non-hashable static arguments are not supported. An error occurred while trying to hash an object of type <class 'jax._src.interpreters.partial_eval.DynamicJaxprTracer'>, Traced<int32[8,420]>with<DynamicJaxprTrace>. The error was:\nTypeError: unhashable type: 'DynamicJaxprTracer'\n"
+  },
+  {
+    "example_name": "CategoryTheory.Functor.LeftExtension.IsPointwiseLeftKanExtension.hom_ext",
+    "example_id": 10,
+    "error": "Non-hashable static arguments are not supported. An error occurred while trying to hash an object of type <class 'jax._src.interpreters.partial_eval.DynamicJaxprTracer'>, Traced<int32[8,420]>with<DynamicJaxprTrace>. The error was:\nTypeError: unhashable type: 'DynamicJaxprTracer'\n"
+  }
+]
