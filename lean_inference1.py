@@ -248,6 +248,7 @@
 
 
 
+
 #!/usr/bin/env python3
 """
 Lean Proofs Model Inference & Verification Script
@@ -386,12 +387,13 @@ class HeraldInferenceTester:
             inference_time = time.time() - start_time
             
             # 5. Detokenize the results back to strings on the host CPU using self.vocab
+            # The model output includes the prompt, so we decode the whole sequence.
             result_tokens_flat = result_tokens.reshape(-1, result_tokens.shape[-1])
             generated_texts = self.vocab.decode(result_tokens_flat.tolist())
             
             return {
                 'success': True,
-                'generated_texts': generated_texts,
+                'generated_texts': generated_texts, # This now contains the full code
                 'inference_time': inference_time
             }
         except Exception as e:
@@ -450,10 +452,11 @@ class HeraldInferenceTester:
             
             results_data = []
             if inference_result['success']:
-                for i, generated_text in enumerate(inference_result['generated_texts']):
-                    full_generated_code = generated_text
+                # The generated_texts already contain the full theorem and proof.
+                for i, full_generated_code in enumerate(inference_result['generated_texts']):
                     example = examples[i]
                     print(f"\n--- Verifying EXAMPLE {i+1}/{len(examples)}: {example['name']} ---")
+                    # Directly verify the output from the model.
                     verification_result = self.verify_with_lean_compiler(full_generated_code, example['name'])
                     results_data.append({
                         'example': example,
@@ -501,4 +504,3 @@ def main():
 
 if __name__ == "__main__":
     exit(main())
-
