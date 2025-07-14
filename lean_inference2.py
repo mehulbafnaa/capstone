@@ -618,28 +618,68 @@ class HeraldInferenceTester:
                 logging.warning(message)
 
 
+# def main():
+#     """Main execution function with argument parsing."""
+#     parser = argparse.ArgumentParser(description="Run RecurrentGemma inference on Herald Proofs.")
+#     parser.add_argument("--ckpt_dir", type=Path, default=Path("2b/2b"), help="Path to the model checkpoint directory.")
+#     parser.add_argument("--tok_path", type=Path, default=Path("2b/tokenizer.model"), help="Path to the tokenizer.model file.")
+#     parser.add_argument("--verifier_path", type=Path, default=Path.home()/ "capstone/lean_verifier", help="Path to the Lean verifier project directory.")
+#     parser.add_argument("--num_examples", type=int, default=3, help="Number of examples to test from the dataset.")
+#     parser.add_argument("--max_steps", type=int, default=1000, help="Maximum number of tokens to generate.")
+#     args = parser.parse_args()
+
+#     try:
+#         tester = HeraldInferenceTester(
+#             ckpt_dir=args.ckpt_dir,
+#             tok_path=args.tok_path,
+#             verifier_path=args.verifier_path,
+#         )
+#         tester.run_test_suite(
+#             num_examples=args.num_examples,
+#             max_generation_steps=args.max_steps
+#         )
+#     except FileNotFoundError as e:
+#         logging.error(e)
+#         return 1
+#     except Exception as e:
+#         if jax.process_index() == 0:
+#             logging.exception(f"A fatal error occurred in the main execution: {e}")
+#         return 1
+    
+#     if jax.process_index() == 0:
+#         logging.info("Test suite completed!")
+#     return 0
+
+
 def main():
     """Main execution function with argument parsing."""
     parser = argparse.ArgumentParser(description="Run RecurrentGemma inference on Herald Proofs.")
     parser.add_argument("--ckpt_dir", type=Path, default=Path("2b/2b"), help="Path to the model checkpoint directory.")
     parser.add_argument("--tok_path", type=Path, default=Path("2b/tokenizer.model"), help="Path to the tokenizer.model file.")
-    parser.add_argument("--verifier_path", type=Path, default=Path.home()/ "capstone/lean_verifier", help="Path to the Lean verifier project directory.")
+    parser.add_argument("--verifier_path", type=Path, default=Path.home() / "lean_verifier", help="Path to the Lean verifier project directory.")
     parser.add_argument("--num_examples", type=int, default=3, help="Number of examples to test from the dataset.")
     parser.add_argument("--max_steps", type=int, default=1000, help="Maximum number of tokens to generate.")
     args = parser.parse_args()
 
+    # --- FIX: Resolve paths to be absolute ---
+    ckpt_path_abs = args.ckpt_dir.resolve()
+    tok_path_abs = args.tok_path.resolve()
+    verifier_path_abs = args.verifier_path.resolve()
+
     try:
         tester = HeraldInferenceTester(
-            ckpt_dir=args.ckpt_dir,
-            tok_path=args.tok_path,
-            verifier_path=args.verifier_path,
+            ckpt_dir=ckpt_path_abs,
+            tok_path=tok_path_abs,
+            verifier_path=verifier_path_abs,
         )
         tester.run_test_suite(
             num_examples=args.num_examples,
             max_generation_steps=args.max_steps
         )
     except FileNotFoundError as e:
-        logging.error(e)
+        # The __init__ method now handles this, but this is good practice
+        if jax.process_index() == 0:
+            logging.error(e)
         return 1
     except Exception as e:
         if jax.process_index() == 0:
@@ -649,7 +689,6 @@ def main():
     if jax.process_index() == 0:
         logging.info("Test suite completed!")
     return 0
-
 
 if __name__ == "__main__":
     exit(main())
