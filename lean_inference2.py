@@ -254,16 +254,13 @@
 # if __name__ == "__main__":
 #     exit(main())
 
-
-
-
 #!/usr/bin/env python3
 """
 Herald Proofs Model Inference Test (TPU v4-16 Optimized)
 
-This script loads examples, generates proofs using the library's correct
-sampling function with sharded inputs, and automatically verifies them.
-It now includes fixes for token preparation and multi-worker logging.
+This script loads examples, generates proofs, and automatically verifies them.
+It now includes the `process_allgather` utility to correctly handle
+distributed array results in a multi-worker environment.
 """
 
 import json
@@ -279,6 +276,8 @@ import orbax.checkpoint as ocp
 import recurrentgemma.jax as rg
 import sentencepiece as spm
 from datasets import load_dataset
+# --- FIX: Import the multi-host utility ---
+from jax.experimental.multihost_utils import process_allgather
 
 
 class HeraldInferenceTester:
@@ -286,9 +285,8 @@ class HeraldInferenceTester:
     Test RecurrentGemma model on Herald Proofs dataset examples
     """
 
-    def __init__(self, ckpt_dir: str = "2b/2b", tok_file: str = "2b/tokenizer.model"):
+    def __init__(self, ckpt_dir: str = "2b-it/2b-it", tok_file: str = "2b-it/tokenizer.model"):
         """Initialize the model, tokenizer, and JAX device mesh."""
-        # FIX: Only print from the main process to avoid duplicate logs.
         if jax.process_index() == 0:
             print("Initializing RecurrentGemma model... 🚀")
 
@@ -296,6 +294,11 @@ class HeraldInferenceTester:
         self.verifier_path = script_dir / 'lean_verifier'
         self.ckpt_dir = Path(ckpt_dir).resolve()
         self.tok_file = Path(tok_file).resolve()
+        
+        # --- ADDED: Check for checkpoint existence for better error messages ---
+        if not self.ckpt_dir.exists():
+            raise FileNotFoundError(f"Checkpoint directory not found at: {self.ckpt_dir}")
+
         self.devices = jax.devices()
         self.num_devices = len(self.devices)
         if jax.process_index() == 0:
@@ -319,7 +322,7 @@ class HeraldInferenceTester:
             self.params = jax.device_put(params, replicated_sharding)
 
     def run_inference(self, prompts: list[str], max_steps: int = 1000):
-        """Run batched inference by calling the sampler's pre-compiled function with sharded inputs."""
+        """Run batched inference and gather results from all workers."""
         if jax.process_index() == 0:
             print(f"Running inference on a batch of {len(prompts)} prompts...")
         start_time = time.time()
@@ -327,23 +330,27 @@ class HeraldInferenceTester:
         try:
             self.sampler.total_generation_steps = max_steps
             tokenized_prompts = [self.vocab.encode(p, add_bos=True) for p in prompts]
-            
-            # --- FIX: Manually pad the tokens instead of calling a non-existent method ---
             max_prompt_len = max(len(t) for t in tokenized_prompts)
             total_len = max_prompt_len + max_steps
             input_tokens = jnp.array([
                 t + [self.vocab.pad_id()] * (total_len - len(t))
                 for t in tokenized_prompts
             ])
-            # --- End Fix ---
 
             sharding = jsh.NamedSharding(self.mesh, jsh.PartitionSpec('data'))
             sharded_tokens = jax.device_put(input_tokens, sharding)
             rng = jax.random.PRNGKey(0)
 
+            # This returns a distributed jax.Array
             output_tokens = self.sampler.sample_fn(self.params, rng, sharded_tokens)
 
-            generated_texts = self.vocab.decode(output_tokens.tolist())
+            # --- FIX: Gather the distributed array onto all hosts before using it. ---
+            gathered_tokens = process_allgather(output_tokens)
+            
+            # Now we can safely convert the local, complete array to a list and decode.
+            generated_texts = self.vocab.decode(gathered_tokens.tolist())
+            # --- End Fix ---
+
             inference_time = time.time() - start_time
             return {'success': True, 'generated_texts': generated_texts, 'inference_time': inference_time}
         except Exception as e:
@@ -352,72 +359,22 @@ class HeraldInferenceTester:
                 traceback.print_exc()
             return {'success': False, 'error': str(e), 'inference_time': time.time() - start_time}
 
-    def run_test_suite(self):
-        """Run the complete test suite on a batch of Herald examples."""
-        if jax.process_index() == 0:
-            print("Starting Herald Proofs inference test suite...")
-            print("=" * 80)
-
-        original_examples = self.load_herald_examples(3)
-        if not original_examples:
-            if jax.process_index() == 0:
-                print("No examples loaded. Exiting.")
-            return
-
-        num_to_pad = (self.num_devices - len(original_examples) % self.num_devices) % self.num_devices
-        padded_examples = original_examples + [original_examples[-1]] * num_to_pad
-        if num_to_pad > 0 and jax.process_index() == 0:
-            print(f"Padding batch with {num_to_pad} examples to match device count of {self.num_devices}.")
-        
-        prompts = [self.create_prompt(ex) for ex in padded_examples]
-        inference_result = self.run_inference(prompts)
-        
-        results = []
-        if inference_result['success']:
-            if jax.process_index() == 0:
-                print(f"\nBatch inference completed in {inference_result['inference_time']:.2f}s")
-            generated_texts = inference_result['generated_texts'][:len(original_examples)]
-
-            for i, example in enumerate(original_examples):
-                if jax.process_index() == 0:
-                    print(f"\n===== PROCESSING EXAMPLE {i+1}/{len(original_examples)}: {example['name']} =====")
-                    print("-" * 60)
-
-                generated_text = generated_texts[i]
-                generated_proof = self.extract_proof_from_output(generated_text)
-                evaluation = self.evaluate_example(generated_proof, example['formal_proof'])
-                
-                if jax.process_index() == 0:
-                    print("🤖 Generated Proof:")
-                    print("-" * 40)
-                    print(generated_proof)
-                    print("-" * 40)
-                
-                full_lean_code = f"{example['header']}\n\n{example['formal_theorem']} := by\n  {generated_proof}"
-                is_verified, verifier_log = self.verify_lean_proof(full_lean_code)
-                evaluation['verified'] = is_verified
-
-                if jax.process_index() == 0:
-                    verification_status = "✅ Verified Successfully" if is_verified else "❌ Verification Failed"
-                    print(f"\nVerification Status: {verification_status}")
-                    if not is_verified:
-                        print("Verifier Output:\n", verifier_log)
-                    print("-" * 60)
-
-                results.append({'example': example, 'generated_proof': generated_proof, 'evaluation': evaluation, 'total_batch_time': inference_result['inference_time']})
-        else:
-            if jax.process_index() == 0:
-                print(f"Batch inference failed: {inference_result['error']}")
-            for example in original_examples:
-                results.append({'example': example, 'error': inference_result['error']})
-        
-        # The summary only needs to be printed once.
-        if jax.process_index() == 0:
-            self._print_summary(results)
-        
-        return results
-        
-    # --- Other methods are mostly unchanged, but printing is now conditional ---
+    # --- Other methods (load_examples, verify_lean_proof, run_test_suite, etc.) remain unchanged ---
+    def verify_lean_proof(self, full_lean_code: str) -> (bool, str):
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.lean', delete=True, encoding='utf-8') as temp_file:
+                temp_file.write(full_lean_code)
+                temp_file.flush()
+                command = ['lake', 'exe', 'Main', temp_file.name]
+                process = subprocess.run(command, cwd=self.verifier_path, capture_output=True, text=True, encoding='utf-8', timeout=60)
+                is_verified = process.returncode == 0
+                return is_verified, process.stdout + process.stderr
+        except FileNotFoundError:
+            return False, f"Error: 'lake' command not found. Is Lean 4 installed and in your PATH?"
+        except subprocess.TimeoutExpired:
+            return False, "Error: Verification timed out."
+        except Exception as e:
+            return False, f"An unexpected error occurred during verification: {e}"
     def load_herald_examples(self, num_examples: int = 3):
         if jax.process_index() == 0:
             print(f"Loading {num_examples} examples from Herald Proofs dataset...")
@@ -438,21 +395,6 @@ class HeraldInferenceTester:
             if jax.process_index() == 0:
                 print(f"Error loading dataset: {e}")
             return []
-    def verify_lean_proof(self, full_lean_code: str) -> (bool, str):
-        try:
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.lean', delete=True, encoding='utf-8') as temp_file:
-                temp_file.write(full_lean_code)
-                temp_file.flush()
-                command = ['lake', 'exe', 'Main', temp_file.name]
-                process = subprocess.run(command, cwd=self.verifier_path, capture_output=True, text=True, encoding='utf-8', timeout=60)
-                is_verified = process.returncode == 0
-                return is_verified, process.stdout + process.stderr
-        except FileNotFoundError:
-            return False, f"Error: 'lake' command not found. Is Lean 4 installed and in your PATH?"
-        except subprocess.TimeoutExpired:
-            return False, "Error: Verification timed out."
-        except Exception as e:
-            return False, f"An unexpected error occurred during verification: {e}"
     def create_prompt(self, example):
         return f"Complete the following Lean 4 theorem proof by replacing 'sorry' with the actual proof tactics.\n\n{example['header']}\n\n{example['formal_theorem']} := by\n  sorry"
     def extract_proof_from_output(self, output_text: str):
@@ -473,6 +415,56 @@ class HeraldInferenceTester:
         tactic_overlap = len(ground_truth_tactics.intersection(generated_tactics))
         tactic_total = len(ground_truth_tactics) if len(ground_truth_tactics) > 0 else 1
         return {'exact_match': exact_match, 'tactic_similarity': tactic_overlap / tactic_total}
+    def run_test_suite(self):
+        if jax.process_index() == 0:
+            print("Starting Herald Proofs inference test suite...")
+            print("=" * 80)
+        original_examples = self.load_herald_examples(3)
+        if not original_examples:
+            if jax.process_index() == 0:
+                print("No examples loaded. Exiting.")
+            return
+        num_to_pad = (self.num_devices - len(original_examples) % self.num_devices) % self.num_devices
+        padded_examples = original_examples + [original_examples[-1]] * num_to_pad
+        if num_to_pad > 0 and jax.process_index() == 0:
+            print(f"Padding batch with {num_to_pad} examples to match device count of {self.num_devices}.")
+        prompts = [self.create_prompt(ex) for ex in padded_examples]
+        inference_result = self.run_inference(prompts)
+        results = []
+        if inference_result['success']:
+            if jax.process_index() == 0:
+                print(f"\nBatch inference completed in {inference_result['inference_time']:.2f}s")
+            generated_texts = inference_result['generated_texts'][:len(original_examples)]
+            for i, example in enumerate(original_examples):
+                if jax.process_index() == 0:
+                    print(f"\n===== PROCESSING EXAMPLE {i+1}/{len(original_examples)}: {example['name']} =====")
+                    print("-" * 60)
+                generated_text = generated_texts[i]
+                generated_proof = self.extract_proof_from_output(generated_text)
+                evaluation = self.evaluate_example(generated_proof, example['formal_proof'])
+                if jax.process_index() == 0:
+                    print("🤖 Generated Proof:")
+                    print("-" * 40)
+                    print(generated_proof)
+                    print("-" * 40)
+                full_lean_code = f"{example['header']}\n\n{example['formal_theorem']} := by\n  {generated_proof}"
+                is_verified, verifier_log = self.verify_lean_proof(full_lean_code)
+                evaluation['verified'] = is_verified
+                if jax.process_index() == 0:
+                    verification_status = "✅ Verified Successfully" if is_verified else "❌ Verification Failed"
+                    print(f"\nVerification Status: {verification_status}")
+                    if not is_verified:
+                        print("Verifier Output:\n", verifier_log)
+                    print("-" * 60)
+                results.append({'example': example, 'generated_proof': generated_proof, 'evaluation': evaluation, 'total_batch_time': inference_result['inference_time']})
+        else:
+            if jax.process_index() == 0:
+                print(f"Batch inference failed: {inference_result['error']}")
+            for example in original_examples:
+                results.append({'example': example, 'error': inference_result['error']})
+        if jax.process_index() == 0:
+            self._print_summary(results)
+        return results
     def _print_summary(self, results):
         print("\n" + "=" * 80)
         print("TEST SUITE SUMMARY")
@@ -506,9 +498,7 @@ def main():
     """Main execution function."""
     try:
         tester = HeraldInferenceTester()
-        # Let JAX handle multi-process setup; only the main process should interact.
         results = tester.run_test_suite()
-        
         if jax.process_index() == 0:
             print("\nSave detailed results to file? (y/n): ", end="")
             if input().lower().startswith('y'):
