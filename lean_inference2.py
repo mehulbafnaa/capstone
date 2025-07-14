@@ -23,11 +23,6 @@ import tpu_profiler
 # Initialize JAX's distributed environment at the very beginning.
 jax.distributed.initialize()
 
-# ==============================================================================
-# ## 1. A Reusable RecurrentGemmaService
-#    - This class handles all JAX and model-loading logic.
-#    - It is completely independent of the verification or dataset logic.
-# ==============================================================================
 class RecurrentGemmaService:
     def __init__(self, ckpt_dir: Path, tok_file: Path):
         print(f"[Process {jax.process_index()}] Initializing RecurrentGemma model...")
@@ -56,10 +51,12 @@ class RecurrentGemmaService:
         )
 
     def _setup_pmap(self):
+        # FIX: The `static_argnums` argument is deprecated in newer JAX versions.
+        # Specifying `None` in `in_axes` is now the correct way to handle
+        # static, broadcasted arguments.
         self.pmapped_generate = jax.pmap(
             self.sampler,
-            in_axes=(0, None),
-            static_argnums=(1,)
+            in_axes=(0, None)
         )
 
     def generate(self, prompts: list[str], max_steps: int) -> list[str]:
@@ -79,11 +76,6 @@ class RecurrentGemmaService:
         result_tokens_flat = result_tokens.reshape(-1, result_tokens.shape[-1])
         return self.vocab.decode(result_tokens_flat.tolist())
 
-# ==============================================================================
-# ## 2. A Dedicated LeanVerifier
-#    - This class handles all interaction with the Lean compiler.
-#    - It doesn't know about models; it just verifies code.
-# ==============================================================================
 class LeanVerifier:
     def __init__(self, lean_project_path: Path):
         self.lean_project_path = lean_project_path
@@ -97,7 +89,6 @@ class LeanVerifier:
         temp_lean_file = self.lean_src_path / f"test_{safe_filename}.lean"
 
         try:
-            # Basic checks before calling the compiler
             if ':= by' not in lean_code:
                 return {'verified': False, 'output': "Separator ':= by' not found."}
             if 'sorry' in lean_code.split(':= by', 1)[-1]:
@@ -119,11 +110,6 @@ class LeanVerifier:
             if temp_lean_file.exists():
                 temp_lean_file.unlink()
 
-# ==============================================================================
-# ## 3. A Clean TestSuite Orchestrator
-#    - This class uses the services to run the specific Herald test suite.
-#    - It contains all the logic specific to this particular task.
-# ==============================================================================
 class HeraldTestSuite:
     def __init__(self, gemma_service: RecurrentGemmaService, lean_verifier: LeanVerifier):
         self.gemma = gemma_service
@@ -176,7 +162,6 @@ class HeraldTestSuite:
             example = examples[i]
             print(f"\n--- Verifying EXAMPLE {i+1}/{len(examples)}: {example['name']} ---")
             
-            # Clean up the generated text before verification
             clean_code = full_code.replace(self.gemma.vocab.decode(self.gemma.vocab.pad_id()), "").strip()
             
             verification = self.verifier.verify(clean_code, example['name'])
@@ -198,10 +183,6 @@ class HeraldTestSuite:
             print(f"✅ Successfully verified proofs: {len(verified_runs)}/{len(results)}")
         print("=" * 80)
 
-# ==============================================================================
-# ## Main Execution Block
-#    - Cleanly sets up services and runs the test suite.
-# ==============================================================================
 def main():
     parser = argparse.ArgumentParser(description="RecurrentGemma Lean Proof Inference & Verification")
     script_dir = Path(__file__).parent.resolve()
@@ -217,17 +198,13 @@ def main():
         args.num_examples = jax.device_count() or 1
 
     try:
-        # 1. Instantiate the required services
         gemma_service = RecurrentGemmaService(ckpt_dir=args.ckpt_dir, tok_file=args.tok_file)
         lean_verifier = LeanVerifier(lean_project_path=args.lean_project_path)
         
-        # 2. Instantiate the test suite with the services
         test_suite = HeraldTestSuite(gemma_service=gemma_service, lean_verifier=lean_verifier)
         
-        # 3. Wait for all processes to be ready before starting the main logic
         jax.block_until_ready(jax.pmap(lambda x: x)(jnp.ones(jax.local_device_count())))
         
-        # 4. Run the suite
         with tpu_profiler.profile():
             test_suite.run(num_examples=args.num_examples, max_steps=args.max_steps)
         
