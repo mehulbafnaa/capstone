@@ -48,7 +48,7 @@ class RecurrentGemmaService:
             model=model,
             params=jax_utils.replicate(params),
             vocab=self.vocab,
-            is_it_model=True # Specify we are using an instruction-tuned model
+            is_it_model=False # Specify we are using an instruction-tuned model
         )
 
     def _setup_pmap(self):
@@ -198,8 +198,8 @@ def main():
     script_dir = Path(__file__).parent.resolve()
     
     # Updated default paths to match the reference script
-    parser.add_argument("--ckpt_dir", type=Path, default=script_dir / "2b-it/2b-it")
-    parser.add_argument("--tok_file", type=Path, default=script_dir / "2b-it/tokenizer.model")
+    parser.add_argument("--ckpt_dir", type=Path, default=script_dir / "2b/2b")
+    parser.add_argument("--tok_file", type=Path, default=script_dir / "2b/tokenizer.model")
     parser.add_argument("--lean_project_path", type=Path, default=script_dir / "lean_verifier")
     parser.add_argument("--num_examples", type=int, default=None)
     parser.add_argument("--max_steps", type=int, default=1024)
