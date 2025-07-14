@@ -312,14 +312,6 @@ class HeraldInferenceTester:
 
         self.replicated_params = jax_utils.replicate(self.params)
 
-        # We will pmap the model's generate method, which works on tokenized inputs.
-        # The Sampler is kept for its convenient tokenizer.
-        self.sampler_for_tokenization = rg.Sampler(
-            model=self.model,
-            vocab=self.vocab,
-            params=self.replicated_params
-        )
-
         def generate_fn(params, tokenized_prompts, total_generation_steps):
             return self.model.generate(
                 tokenized_prompts,
@@ -370,13 +362,13 @@ class HeraldInferenceTester:
         start_time = time.time()
         
         try:
-            # 1. Tokenize all prompts on the host CPU (process 0)
-            tokenized_prompts = self.sampler_for_tokenization.tokenizer.encode(prompts)
+            # 1. Tokenize all prompts on the host CPU (process 0) using self.vocab
+            tokenized_prompts = self.vocab.encode(prompts)
 
             # 2. Pad to the same length to create a single NumPy array
             max_len = max(len(p) for p in tokenized_prompts)
             padded_prompts = np.array(
-                [p + [self.sampler_for_tokenization.tokenizer.pad_id()] * (max_len - len(p)) for p in tokenized_prompts]
+                [p + [self.vocab.pad_id()] * (max_len - len(p)) for p in tokenized_prompts]
             )
             
             # 3. Reshape for pmap (num_devices, prompts_per_device, sequence_length)
@@ -393,9 +385,9 @@ class HeraldInferenceTester:
             result_tokens.block_until_ready()
             inference_time = time.time() - start_time
             
-            # 5. Detokenize the results back to strings on the host CPU
+            # 5. Detokenize the results back to strings on the host CPU using self.vocab
             result_tokens_flat = result_tokens.reshape(-1, result_tokens.shape[-1])
-            generated_texts = self.sampler_for_tokenization.tokenizer.decode(result_tokens_flat.tolist())
+            generated_texts = self.vocab.decode(result_tokens_flat.tolist())
             
             return {
                 'success': True,
