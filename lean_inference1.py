@@ -317,7 +317,7 @@ class HeraldInferenceTester:
 
         # API FIX: Use the 'Sampler' class for generation. The 'Griffin' model
         # itself does not have a '.generate()' method.
-        self.sampler = rg.Sampler(model=self.model)
+        self.sampler = rg.Sampler(model=self.model, params=self.params, vocab=self.vocab)
 
         self.replicated_params = jax_utils.replicate(self.params)
 
@@ -327,6 +327,7 @@ class HeraldInferenceTester:
                 input_tokens=tokenized_prompts,
                 params=params,
                 total_generation_steps=total_generation_steps,
+                is_it_model=False
             )
 
         # pmap the generation function.
