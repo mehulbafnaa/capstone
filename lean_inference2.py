@@ -274,7 +274,7 @@ class HeraldInferenceTester:
 
         # Create a 2D mesh, conventionally for data and model parallelism.
         # For batched inference, we will primarily use the 'data' axis.
-        self.mesh = jsh.Mesh(self.devices, ('data', 'model'))
+        self.mesh = jsh.Mesh(self.devices, ('data',))
         print(f"JAX device mesh created with {self.mesh.size} devices.")
 
         # Load model and prepare for parallel execution
@@ -309,7 +309,7 @@ class HeraldInferenceTester:
                 # Specify how JAX should shard the function's arguments
                 in_shardings=(
                     replicated_sharding,  # self (model parameters are replicated)
-                    jsh.NamedSharding(self.mesh, jsh.PartitionSpec('data', None)),  # Shard input_tokens on the 'data' axis
+                    jsh.NamedSharding(self.mesh, jsh.PartitionSpec('data')),  # Shard input_tokens on the 'data' axis
                     None,  # total_generation_steps (a static argument, no sharding needed)
                     replicated_sharding,  # params (also replicated)
                 ),
