@@ -413,8 +413,8 @@ def main():
 
     warnings.filterwarnings("ignore", message="Some donated buffers were not usable:")
 
-    NUM_FEW_SHOT = 2
-    BATCH_SIZE = 32 if args.dev else 128
+    NUM_FEW_SHOT = 1
+    BATCH_SIZE = 32 if args.dev else 8
     
     # Generate a unique output file name for each host process
     base_filename = "dev_results" if args.dev else f"unified_results_{NUM_FEW_SHOT}-shot"
