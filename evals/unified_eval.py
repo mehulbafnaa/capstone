@@ -74,8 +74,8 @@ def verify_single_proof_worker(record: dict) -> dict:
 class UnifiedTester:
     def __init__(self):
         print(f"Process {jax.process_index()}: Initializing model...")
-        self.ckpt_dir = REPO_ROOT / "2b-it" / "2b-it"
-        self.tok_file = REPO_ROOT / "2b-it" / "tokenizer.model"
+        self.ckpt_dir = REPO_ROOT / "2b" / "2b"
+        self.tok_file = REPO_ROOT / "2b" / "tokenizer.model"
         for p in [self.ckpt_dir, self.tok_file]:
             if not p.exists():
                 raise FileNotFoundError(f"Required path not found: {p}")
