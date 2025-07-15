@@ -8,8 +8,8 @@ import recurrentgemma.jax as rg    # alias for the JAX API
 import jax
 
 # ── 1. point at your local files ──────────────────────────────────────────
-CKPT_DIR = Path("2b-it/2b-it").resolve()              # contains _METADATA, checkpoint/, etc.
-TOK_FILE = Path("2b-it/tokenizer.model").resolve()  # SentencePiece vocab
+CKPT_DIR = Path("2b/2b").resolve()              # contains _METADATA, checkpoint/, etc.
+TOK_FILE = Path("2b/tokenizer.model").resolve()  # SentencePiece vocab
 
 # ── 2. restore the weights PyTree (OCDBT) ─────────────────────────────────
 restored = ocp.PyTreeCheckpointer().restore(str(CKPT_DIR))

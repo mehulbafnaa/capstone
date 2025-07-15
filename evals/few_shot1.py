@@ -31,8 +31,8 @@ class HeraldInferenceTester:
         """Initialize the model and tokenizer using paths relative to the repo root."""
         print("Initializing RecurrentGemma model...")
 
-        self.ckpt_dir = REPO_ROOT / "2b-it" / "2b-it"
-        self.tok_file = REPO_ROOT / "2b-it" / "tokenizer.model"
+        self.ckpt_dir = REPO_ROOT / "2b" / "2b"
+        self.tok_file = REPO_ROOT / "2b" / "tokenizer.model"
         self.lean_project_path = REPO_ROOT / "lean_verifier"
         self.lean_src_path = self.lean_project_path / "LeanVerifier"
 

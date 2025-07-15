@@ -7,7 +7,7 @@ from flax.traverse_util import flatten_dict
 from recurrentgemma.jax import load_parameters, GriffinConfig, Griffin
 
 # 1. Point to your checkpoint directory (absolute)
-ckpt_path = Path("2b-it/2b-it").resolve()
+ckpt_path = Path("2b/2b").resolve()
 print(f"Loading checkpoint from: {ckpt_path}")
 
 # 2. Load the Flax params onto one device

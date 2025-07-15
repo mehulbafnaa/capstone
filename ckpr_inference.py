@@ -15,7 +15,7 @@ import jax
 # Point to the TOP-LEVEL directory managed by Orbax, not a specific step.
 CKPT_MANAGER_DIR = Path("finetuning_checkpoints/").resolve()
 
-TOK_FILE = Path("2b-it/tokenizer.model").resolve()
+TOK_FILE = Path("2b/tokenizer.model").resolve()
 
 # ── 2. Restore the fine-tuned weights using CheckpointManager ───────────────
 # Initialize the manager for the directory.

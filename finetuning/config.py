@@ -5,8 +5,8 @@ import jax.numpy as jnp
 REPO_ROOT = Path(__file__).parent.parent.resolve()
 
 # Model and Tokenizer Paths (consistent with inference.py)
-CKPT_DIR = REPO_ROOT / "2b-it" / "2b-it"
-TOK_FILE = REPO_ROOT / "2b-it" / "tokenizer.model"
+CKPT_DIR = REPO_ROOT / "2b" / "2b"
+TOK_FILE = REPO_ROOT / "2b" / "tokenizer.model"
 
 # Dataset Configuration
 DATASET_NAME = "FrenzyMath/Herald_proofs"

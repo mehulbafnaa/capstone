@@ -7,7 +7,7 @@ Develop a robust and efficient finetuning pipeline for the RecurrentGemma model.
 *   **Python Environment:** Python 3.10+ with `uv` for dependency management.
 *   **Dependencies:** All packages listed in `pyproject.toml` (especially `jax[tpu]`, `flax`, `recurrentgemma`, `datasets`, `orbax-checkpoint`, `optax`, `tqdm`).
 *   **TPU Access:** A configured TPU v4-8 instance accessible via JAX.
-*   **Pre-trained Assets:** The existing RecurrentGemma model checkpoints (`2b-it/2b-it`) and SentencePiece tokenizer model (`2b-it/tokenizer.model`).
+*   **Pre-trained Assets:** The existing RecurrentGemma model checkpoints (`2b/2b`) and SentencePiece tokenizer model (`2b/tokenizer.model`).
 *   **Dataset:** The `FrenzyMath/Herald_proofs` dataset, ideally downloaded locally using `download_dataset.py`.
 
 ## Key Considerations for TPU v4-8 Finetuning
@@ -46,7 +46,7 @@ Develop a robust and efficient finetuning pipeline for the RecurrentGemma model.
     *   **Action:** Create `finetuning/data_pipeline.py` to handle dataset loading, tokenization, and batching.
     *   **Steps:**
         *   **Load Dataset:** Use `datasets.load_dataset("FrenzyMath/Herald_proofs", split="train")`.
-        *   **Load Tokenizer:** Instantiate `sentencepiece.SentencePieceProcessor` with `2b-it/tokenizer.model`.
+        *   **Load Tokenizer:** Instantiate `sentencepiece.SentencePieceProcessor` with `2b/tokenizer.model`.
         *   **Define Input/Output Format:**
             *   **Input:** `tokenizer.bos_id() + prompt_tokens + theorem_tokens + tokenizer.eos_id()`
             *   **Target Output:** `proof_tokens + tokenizer.eos_id()` (for causal language modeling).
