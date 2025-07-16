@@ -20,34 +20,33 @@ def get_dataset(split: str, global_batch_size: int, shuffle: bool = True):
 
     num_examples = len(dataset)
 
-    # 1. Use datasets.map() to create the new columns.
+    # 1. Use a single-process map to deterministically add the new columns.
     def add_masks_and_pos(example):
-        example['attention_mask'] = [1] * len(example['input_ids'])
-        example['segment_pos'] = list(range(len(example['input_ids'])))
+        example['attention_mask'] = tf.ones_like(example['input_ids'], dtype=tf.int64)
+        example['segment_pos'] = tf.range(tf.shape(example['input_ids'])[0], dtype=tf.int64)
         return example
+        
+    # Convert to a tf.data.Dataset BEFORE mapping.
+    tf_dataset = tf.data.Dataset.from_generator(
+        lambda: iter(dataset),
+        output_signature={
+            "input_ids": tf.TensorSpec(shape=(None,), dtype=tf.int64),
+            "labels": tf.TensorSpec(shape=(None,), dtype=tf.int64),
+        }
+    ).map(add_masks_and_pos, num_parallel_calls=tf.data.AUTOTUNE)
 
-    dataset = dataset.map(add_masks_and_pos, num_proc=16)
 
-    # 2. Convert to a tf.data.Dataset.
-    tf_dataset = dataset.to_tf_dataset(
-        columns=['input_ids', 'labels', 'attention_mask', 'segment_pos']
-    )
-
-    # 3. Apply the shuffle-then-shard pattern to the tf.data.Dataset.
+    # 2. Now, apply the shuffle-then-shard pattern.
     if shuffle:
-        # Shuffle the full dataset with a fixed seed for reproducibility.
         tf_dataset = tf_dataset.shuffle(buffer_size=10_000, seed=42)
 
-    # Shard the dataset so each host gets a unique slice.
     tf_dataset = tf_dataset.shard(
         num_shards=jax.process_count(),
         index=jax.process_index()
     )
 
-    # Calculate the batch size for each host.
     per_host_batch_size = global_batch_size // jax.process_count()
 
-    # Apply padding and batching.
     tf_dataset = tf_dataset.padded_batch(
         per_host_batch_size,
         padded_shapes={
@@ -64,8 +63,7 @@ def get_dataset(split: str, global_batch_size: int, shuffle: bool = True):
         },
         drop_remainder=True
     )
-
-    # Prefetch for performance.
+    
     tf_dataset = tf_dataset.prefetch(tf.data.AUTOTUNE)
 
     return tf_dataset, num_examples
