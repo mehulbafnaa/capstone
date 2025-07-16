@@ -80,6 +80,7 @@ def get_dataset(split: str, global_batch_size: int, shuffle: bool = True):
     shuffled shard for each host.
     """
     try:
+        # 1. Load the dataset from disk using the Hugging Face library
         dataset = load_from_disk(PRETOKENIZED_DATASET_DIR)[split]
     except FileNotFoundError:
         raise RuntimeError(
@@ -89,33 +90,31 @@ def get_dataset(split: str, global_batch_size: int, shuffle: bool = True):
 
     num_examples = len(dataset)
 
-    # 1. Map to create the missing columns. This is deterministic.
+    # 2. IMPORTANT: Shard the Hugging Face Dataset object directly.
+    # This is the most reliable way to ensure each process gets a unique slice.
+    dataset = dataset.shard(
+        num_shards=jax.process_count(),
+        index=jax.process_index()
+    )
+
+    # 3. Map to create the missing columns.
     def add_masks_and_pos(example):
         example['attention_mask'] = [1] * len(example['input_ids'])
         example['segment_pos'] = list(range(len(example['input_ids'])))
         return example
     
-    dataset = dataset.map(add_masks_and_pos, num_proc=1) # Use num_proc=1 for determinism
+    dataset = dataset.map(add_masks_and_pos, num_proc=1)
 
-    # 2. Convert to tf.data format
+    # 4. Now convert the pre-sharded dataset to tf.data format
     tf_dataset = dataset.to_tf_dataset(
         columns=['input_ids', 'labels', 'attention_mask', 'segment_pos']
     )
 
-    # 3. IMPORTANT: Shard the dataset *before* shuffling.
-    # This gives each process its own unique, deterministic slice of the data.
-    tf_dataset = tf_dataset.shard(
-        num_shards=jax.process_count(),
-        index=jax.process_index()
-    )
-
-    # 4. Now, shuffle each process's local data shard.
+    # 5. Now, shuffle each process's local data shard.
     if shuffle:
-        # Use a buffer size for effective shuffling. A common choice is a multiple of the batch size.
-        shuffle_buffer_size = 10_000 
-        tf_dataset = tf_dataset.shuffle(shuffle_buffer_size, seed=42)
+        tf_dataset = tf_dataset.shuffle(buffer_size=10_000, seed=42)
 
-    # 5. Batch and pad the data
+    # 6. Batch and pad the data
     per_host_batch_size = global_batch_size // jax.process_count()
     tf_dataset = tf_dataset.padded_batch(
         per_host_batch_size,
