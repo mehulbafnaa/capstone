@@ -592,8 +592,7 @@ def main():
                 self.rnn_state_sharding_spec = PartitionSpec('data_axis')
 
         model.scan_sharding_spec = ScanShardingHelper(mesh=device_mesh)
-
-        # --- Optimizer Change: AdamW with Cosine Decay Schedule ---
+        
         train_dataset_for_size = get_dataset(TRAIN_SPLIT, effective_batch_size * num_devices)
         total_train_steps = (len(train_dataset_for_size) // GRADIENT_ACCUMULATION_STEPS) * NUM_EPOCHS
 
@@ -601,18 +600,12 @@ def main():
             print(f"Total training optimizer steps: {total_train_steps}")
 
         lr_schedule = optax.cosine_decay_schedule(
-            init_value=LEARNING_RATE,
-            decay_steps=total_train_steps,
-            alpha=0.1  # Decay to 10% of the initial learning rate
+            init_value=LEARNING_RATE, decay_steps=total_train_steps, alpha=0.1
         )
-
         optimizer = optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.adamw(learning_rate=lr_schedule)
+            optax.clip_by_global_norm(1.0), optax.adamw(learning_rate=lr_schedule)
         )
-        # --- End of Optimizer Change ---
-
-        # Create the initial TrainState on the host CPU.
+        
         if jax.process_index() == 0:
             print("Creating initial training state on CPU...")
         state_on_cpu = TrainState.create(
@@ -623,22 +616,27 @@ def main():
         )
         del params
 
-        # Create a sharding rule PyTree that matches the state's JAX-visible structure.
+        # Create sharding rule PyTrees for params and opt_state
         param_rules = get_param_sharding(state_on_cpu.params)
-        opt_state_rules = jax.tree.map(get_param_sharding, state_on_cpu.opt_state)
-        
-        # Use a dummy state to get the correct PyTree structure for sharding spec
-        # This avoids issues with static fields
-        dummy_sharding_spec = state_on_cpu.replace(
+        # For opt_state, you might need to handle cases where it's a tuple of states
+        if isinstance(state_on_cpu.opt_state, tuple):
+             opt_state_rules = tuple(jax.tree.map(get_param_sharding, s) for s in state_on_cpu.opt_state)
+        else:
+             opt_state_rules = jax.tree.map(get_param_sharding, state_on_cpu.opt_state)
+
+        # Create the sharding specification for the entire state using the state itself as a template.
+        # This is the PyTree of PartitionSpecs that pjit needs.
+        state_sharding_spec = state_on_cpu.replace(
             step=PartitionSpec(),
             params=param_rules,
             opt_state=opt_state_rules,
             accum_grads=param_rules
         )
         
+        # Create the concrete sharding object for device_put
         sharding_for_put = jax.tree.map(
             lambda spec: NamedSharding(device_mesh, spec),
-            dummy_sharding_spec,
+            state_sharding_spec,
             is_leaf=lambda x: isinstance(x, PartitionSpec)
         )
 
@@ -646,17 +644,19 @@ def main():
             print("Sharding state across all devices...")
         p_train_state = jax.device_put(state_on_cpu, sharding_for_put)
 
+        # --- CORRECTED PJIT DEFINITIONS ---
         p_train_step = pjit(
             train_step,
-            in_shardings=(type(p_train_state), data_sharding, None, None),
-            out_shardings=(type(p_train_state), None)
+            in_shardings=(state_sharding_spec, data_sharding, None, None),
+            out_shardings=(state_sharding_spec, None)
         )
         p_apply_grads = pjit(
             apply_accumulated_gradients,
-            in_shardings=(type(p_train_state),),
-            out_shardings=type(p_train_state),
+            in_shardings=(state_sharding_spec,),
+            out_shardings=state_sharding_spec,
             donate_argnums=(0,)
         )
+        # --- END OF CORRECTION ---
 
         rng = jax.random.PRNGKey(0)
         base_dropout_rng = jax.random.fold_in(rng, jax.process_index())
