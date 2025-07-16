@@ -502,6 +502,11 @@ def main():
             # Use jax.tree_util.tree_map_with_path to pass names to the sharding function
             return jax.tree_util.tree_map_with_path(get_spec, param_pytree)
 
+
+        model, _, params, _ = load_recurrent_gemma_model(
+            CKPT_DIR, TOK_FILE, params_dtype=WEIGHT_DTYPE
+        )
+
         class ScanShardingHelper:
             def __init__(self, mesh):
                 self.mesh = mesh
