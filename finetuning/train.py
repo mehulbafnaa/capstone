@@ -439,7 +439,7 @@ def main():
         # Define sharding rules only for the array fields of the state.
         state_sharding_spec = TrainState(
             step=PartitionSpec(),
-            apply_fn=None
+            apply_fn=None,
             params=param_sharding_rules,
             tx=None,
             opt_state=opt_state_sharding_rules,
