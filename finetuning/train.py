@@ -376,8 +376,13 @@ def main():
             """Defines sharding rules to implement model parallelism."""
             def get_spec(path, param):
                 # This line is the only change needed.
-                # It now correctly handles both dictionary keys and list/tuple indices.
-                path_str = "/".join([str(p.idx) if isinstance(p, jax.tree_util.SequenceKey) else p.key for p in path])
+                # It now correctly handles all common path types: dicts, lists/tuples, and objects.
+                path_str = "/".join([
+                    str(p.idx) if isinstance(p, jax.tree_util.SequenceKey)
+                    else p.name if isinstance(p, jax.tree_util.GetAttrKey)
+                    else p.key
+                    for p in path
+                ])
                 
                 # Shard the very large embedding and output layers along the vocabulary axis
                 if ('embedder' in path_str or 'output' in path_str) and param.ndim > 1:
