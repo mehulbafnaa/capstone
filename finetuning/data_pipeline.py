@@ -179,6 +179,79 @@
 
 
 
+# # In finetuning/data_pipeline.py
+
+# import tensorflow as tf
+# from datasets import load_from_disk
+# from finetuning.config import PRETOKENIZED_DATASET_DIR, MAX_SEQ_LEN
+# import jax
+
+# def get_dataset(split: str, global_batch_size: int, shuffle: bool = True):
+#     """
+#     Loads the dataset with existing columns and generates the missing
+#     columns on the fly.
+#     """
+#     try:
+#         dataset = load_from_disk(PRETOKENIZED_DATASET_DIR)[split]
+#     except FileNotFoundError:
+#         raise RuntimeError(
+#             f"Pre-tokenized dataset not found at {PRETOKENIZED_DATASET_DIR}. "
+#             "Please run `python -m finetuning.pretokenize_dataset` first."
+#         )
+
+#     num_examples = len(dataset)
+
+#     # 1. Expect only the columns that actually exist on disk.
+#     tf_dataset = tf.data.Dataset.from_generator(
+#         lambda: iter(dataset),
+#         output_signature={
+#             "input_ids": tf.TensorSpec(shape=(None,), dtype=tf.int64),
+#             "labels": tf.TensorSpec(shape=(None,), dtype=tf.int64),
+#         }
+#     )
+
+#     # 2. Add a map function to create the missing columns.
+#     def create_masks_and_pos(example):
+#         example['attention_mask'] = tf.ones_like(example['input_ids'])
+#         example['segment_pos'] = tf.range(tf.shape(example['input_ids'])[0])
+#         return example
+
+#     tf_dataset = tf_dataset.map(create_masks_and_pos, num_parallel_calls=tf.data.AUTOTUNE)
+
+#     # The rest of the pipeline remains the same
+#     if shuffle:
+#         tf_dataset = tf_dataset.shuffle(buffer_size=10_000, seed=42)
+
+#     tf_dataset = tf_dataset.shard(
+#         num_shards=jax.process_count(),
+#         index=jax.process_index()
+#     )
+
+#     per_host_batch_size = global_batch_size // jax.process_count()
+
+#     tf_dataset = tf_dataset.padded_batch(
+#         per_host_batch_size,
+#         padded_shapes={
+#             "input_ids": [MAX_SEQ_LEN],
+#             "labels": [MAX_SEQ_LEN],
+#             "attention_mask": [MAX_SEQ_LEN],
+#             "segment_pos": [MAX_SEQ_LEN],
+#         },
+#         padding_values={
+#             "input_ids": tf.constant(0, dtype=tf.int64),
+#             "attention_mask": tf.constant(0, dtype=tf.int64),
+#             "labels": tf.constant(-100, dtype=tf.int64),
+#             "segment_pos": tf.constant(0, dtype=tf.int64),
+#         },
+#         drop_remainder=True
+#     )
+    
+#     tf_dataset = tf_dataset.prefetch(tf.data.AUTOTUNE)
+
+#     return tf_dataset, num_examples
+
+
+
 # In finetuning/data_pipeline.py
 
 import tensorflow as tf
@@ -188,8 +261,8 @@ import jax
 
 def get_dataset(split: str, global_batch_size: int, shuffle: bool = True):
     """
-    Loads the dataset with existing columns and generates the missing
-    columns on the fly.
+    Loads the dataset and prepares a unique, deterministically
+    shuffled shard for each host.
     """
     try:
         dataset = load_from_disk(PRETOKENIZED_DATASET_DIR)[split]
@@ -201,51 +274,33 @@ def get_dataset(split: str, global_batch_size: int, shuffle: bool = True):
 
     num_examples = len(dataset)
 
-    # 1. Expect only the columns that actually exist on disk.
-    tf_dataset = tf.data.Dataset.from_generator(
-        lambda: iter(dataset),
-        output_signature={
-            "input_ids": tf.TensorSpec(shape=(None,), dtype=tf.int64),
-            "labels": tf.TensorSpec(shape=(None,), dtype=tf.int64),
-        }
-    )
-
-    # 2. Add a map function to create the missing columns.
-    def create_masks_and_pos(example):
-        example['attention_mask'] = tf.ones_like(example['input_ids'])
-        example['segment_pos'] = tf.range(tf.shape(example['input_ids'])[0])
+    # 1. Use datasets.map() to create the new columns. This is often faster.
+    def add_masks_and_pos(example):
+        example['attention_mask'] = [1] * len(example['input_ids'])
+        example['segment_pos'] = list(range(len(example['input_ids'])))
         return example
 
-    tf_dataset = tf_dataset.map(create_masks_and_pos, num_parallel_calls=tf.data.AUTOTUNE)
+    dataset = dataset.map(add_masks_and_pos, num_proc=16) # Use multiprocessing
 
-    # The rest of the pipeline remains the same
-    if shuffle:
-        tf_dataset = tf_dataset.shuffle(buffer_size=10_000, seed=42)
+    # 2. Use the efficient .to_tf_dataset() method.
+    per_host_batch_size = global_batch_size // jax.process_count()
+    
+    tf_dataset = dataset.to_tf_dataset(
+        columns=['input_ids', 'labels', 'attention_mask', 'segment_pos'],
+        batch_size=per_host_batch_size,
+        shuffle=shuffle,
+        # Use a fixed seed in shuffle for reproducibility across hosts
+        seed=42 if shuffle else None,
+        drop_remainder=True
+    )
 
+    # 3. Shard the dataset *after* it has been shuffled and batched.
     tf_dataset = tf_dataset.shard(
         num_shards=jax.process_count(),
         index=jax.process_index()
     )
-
-    per_host_batch_size = global_batch_size // jax.process_count()
-
-    tf_dataset = tf_dataset.padded_batch(
-        per_host_batch_size,
-        padded_shapes={
-            "input_ids": [MAX_SEQ_LEN],
-            "labels": [MAX_SEQ_LEN],
-            "attention_mask": [MAX_SEQ_LEN],
-            "segment_pos": [MAX_SEQ_LEN],
-        },
-        padding_values={
-            "input_ids": tf.constant(0, dtype=tf.int64),
-            "attention_mask": tf.constant(0, dtype=tf.int64),
-            "labels": tf.constant(-100, dtype=tf.int64),
-            "segment_pos": tf.constant(0, dtype=tf.int64),
-        },
-        drop_remainder=True
-    )
     
+    # 4. Prefetch for performance.
     tf_dataset = tf_dataset.prefetch(tf.data.AUTOTUNE)
 
     return tf_dataset, num_examples
