@@ -617,10 +617,7 @@ def main():
     num_devices = jax.device_count()
     with Mesh(jax.devices(), axis_names=('data_axis',)) as device_mesh:
         effective_batch_size = BATCH_SIZE
-        if BATCH_SIZE == 1:
-            effective_batch_size = 2
-            if jax.process_index() == 0:
-                print("\nWARNING: Temporarily overriding per-device BATCH_SIZE to 2 to avoid a library bug.\n")
+        
 
         data_sharding = NamedSharding(mesh=device_mesh, spec=PartitionSpec('data_axis',))
 
