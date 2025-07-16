@@ -160,8 +160,16 @@ def get_dataset(split: str, global_batch_size: int, shuffle: bool = True):
             "labels": [MAX_SEQ_LEN],
             "segment_pos": [MAX_SEQ_LEN],
         },
+        # padding_values={
+        #     "input_ids": 0, "attention_mask": 0, "labels": -100, "segment_pos": 0,
+        # },
+
+
         padding_values={
-            "input_ids": 0, "attention_mask": 0, "labels": -100, "segment_pos": 0,
+            "input_ids": tf.constant(0, dtype=tf.int64),
+            "attention_mask": tf.constant(0, dtype=tf.int64),
+            "labels": tf.constant(-100, dtype=tf.int64),
+            "segment_pos": tf.constant(0, dtype=tf.int64),
         },
         drop_remainder=True
     )
