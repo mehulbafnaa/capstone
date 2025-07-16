@@ -538,8 +538,6 @@
 #     main()
 
 
-
-
 import jax
 import jax.numpy as jnp
 import optax
@@ -552,7 +550,7 @@ from pathlib import Path
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.pjit import pjit
 import jax.tree_util
-import tensorflow_datasets as tfds
+import tensorflow_datasets as tfds 
 from jax.experimental import multihost_utils
 
 # Assume these are in separate files as per your structure
@@ -629,6 +627,7 @@ def main():
         def get_param_sharding(pytree):
             """Defines sharding rules to implement model parallelism."""
             def get_spec(path, param):
+                # Robustly convert the path tuple into a string for matching
                 path_str = "/".join([
                     str(p.idx) if isinstance(p, jax.tree_util.SequenceKey)
                     else p.name if isinstance(p, jax.tree_util.GetAttrKey)
@@ -649,8 +648,20 @@ def main():
             CKPT_DIR,
             TOK_FILE,
             params_dtype=WEIGHT_DTYPE,
-            use_checkpointing=True  # Enable gradient checkpointing
+            use_checkpointing=True  # Enable gradient checkpointing in the model
         )
+
+        # This helper class tells the model how to shard its internal states
+        # for model parallelism, which is required for its custom kernels.
+        class ScanShardingHelper:
+            def __init__(self, mesh):
+                self.mesh = mesh
+                self.sequence_axis_name = None
+                self.sequence_axis_index_groups = None
+                self.activations_sharding_spec = PartitionSpec('data_axis')
+                self.rnn_state_sharding_spec = PartitionSpec('data_axis')
+
+        model.scan_sharding_spec = ScanShardingHelper(mesh=device_mesh)
         
         train_dataset, num_train_examples = get_dataset(TRAIN_SPLIT, effective_batch_size * num_devices)
         train_dataset = tfds.as_numpy(train_dataset)
@@ -680,6 +691,7 @@ def main():
         )
         del params
 
+        # Apply the path-based model parallelism sharding rules
         param_rules = get_param_sharding(state_on_cpu.params)
         opt_state_rules = get_param_sharding(state_on_cpu.opt_state)
 
@@ -729,6 +741,7 @@ def main():
             total_loss = 0
             
             for step, batch in enumerate(pbar if jax.process_index() == 0 else train_dataset):
+                # This converts the local batch on each host into a single, global sharded array.
                 sharded_batch = jax.tree_util.tree_map(
                     lambda x: multihost_utils.host_local_array_to_global_array(
                         x,
