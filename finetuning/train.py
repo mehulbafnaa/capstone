@@ -374,7 +374,5 @@ def main():
 
 
 if __name__ == "__main__":
-    from finetuning.pretokenize_dataset import pretokenize_and_save
-    pretokenize_and_save()
     main()
 
