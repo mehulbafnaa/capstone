@@ -467,16 +467,40 @@ def main():
 
         data_sharding = NamedSharding(mesh=device_mesh, spec=PartitionSpec('data_axis',))
 
-        def get_param_sharding(param_pytree):
-            def get_spec(param):
-                if param.ndim > 1 and param.size > 1_000_000:
-                    return PartitionSpec(None, 'data_axis')
-                return PartitionSpec()
-            return jax.tree.map(get_spec, param_pytree)
+        # def get_param_sharding(param_pytree):
+        #     def get_spec(param):
+        #         if param.ndim > 1 and param.size > 1_000_000:
+        #             return PartitionSpec(None, 'data_axis')
+        #         return PartitionSpec()
+        #     return jax.tree.map(get_spec, param_pytree)
 
-        model, _, params, _ = load_recurrent_gemma_model(
-            CKPT_DIR, TOK_FILE, params_dtype=WEIGHT_DTYPE
-        )
+        # model, _, params, _ = load_recurrent_gemma_model(
+        #     CKPT_DIR, TOK_FILE, params_dtype=WEIGHT_DTYPE
+        # )
+
+        def get_param_sharding(param_pytree):
+            def get_spec(name_path, param): # Logic now depends on the parameter's name
+                # Shard the embedding table along the vocabulary axis
+                if 'embedder' in name_path and param.ndim > 1:
+                    print(f"Sharding '{name_path}' with PartitionSpec('data_axis', None)")
+                    return PartitionSpec('data_axis', None)
+                    
+                # Shard the final output layer
+                elif 'output' in name_path and 'kernel' in name_path and param.ndim > 1:
+                    print(f"Sharding '{name_path}' with PartitionSpec(None, 'data_axis')")
+                    return PartitionSpec(None, 'data_axis')
+
+                # Shard MLP layers
+                elif 'mlp' in name_path and 'kernel' in name_path and param.ndim > 1:
+                    print(f"Sharding '{name_path}' with PartitionSpec(None, 'data_axis')")
+                    return PartitionSpec(None, 'data_axis')
+                    
+                # Replicate all other small parameters
+                else:
+                    return PartitionSpec()
+
+            # Use jax.tree_util.tree_map_with_path to pass names to the sharding function
+            return jax.tree_util.tree_map_with_path(get_spec, param_pytree)
 
         class ScanShardingHelper:
             def __init__(self, mesh):
