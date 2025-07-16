@@ -349,11 +349,35 @@ def main():
 
         data_sharding = NamedSharding(mesh=device_mesh, spec=PartitionSpec('data_axis',))
 
+        # def get_param_sharding(pytree):
+        #     """Defines sharding rules to implement model parallelism."""
+        #     def get_spec(path, param):
+        #         # Convert the path tuple into a string, e.g., "params/blocks_0/mlp/kernel"
+        #         path_str = "/".join(p.key for p in path)
+                
+        #         # Shard the very large embedding and output layers along the vocabulary axis
+        #         if ('embedder' in path_str or 'output' in path_str) and param.ndim > 1:
+        #             return PartitionSpec('data_axis', None)
+
+        #         # Shard the MLP and attention kernels along their wide dimension
+        #         elif ('mlp' in path_str or 'attention' in path_str) and 'kernel' in path_str and param.ndim > 1:
+        #             return PartitionSpec(None, 'data_axis')
+                    
+        #         # Replicate all other small parameters (like biases, norms)
+        #         else:
+        #             return PartitionSpec()
+
+        #     return jax.tree_util.tree_map_with_path(get_spec, pytree)
+
+
+        # In train.py
+
         def get_param_sharding(pytree):
             """Defines sharding rules to implement model parallelism."""
             def get_spec(path, param):
-                # Convert the path tuple into a string, e.g., "params/blocks_0/mlp/kernel"
-                path_str = "/".join(p.key for p in path)
+                # This line is the only change needed.
+                # It now correctly handles both dictionary keys and list/tuple indices.
+                path_str = "/".join([str(p.idx) if isinstance(p, jax.tree_util.SequenceKey) else p.key for p in path])
                 
                 # Shard the very large embedding and output layers along the vocabulary axis
                 if ('embedder' in path_str or 'output' in path_str) and param.ndim > 1:
