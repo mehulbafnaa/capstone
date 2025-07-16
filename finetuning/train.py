@@ -440,6 +440,7 @@ from pathlib import Path
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.pjit import pjit
 import jax.tree_util
+import tensorflow_datasets as tfds 
 
 # Assume these are in separate files as per your structure
 from utils.model_loader import load_recurrent_gemma_model
@@ -534,6 +535,7 @@ def main():
         model.scan_sharding_spec = ScanShardingHelper(mesh=device_mesh)
 
         train_dataset = get_dataset(TRAIN_SPLIT, effective_batch_size * num_devices)
+        train_dataset = tds.as_numpy(train_dataset)
         steps_per_epoch = len(train_dataset) // GRADIENT_ACCUMULATION_STEPS
         total_train_steps = steps_per_epoch * NUM_EPOCHS
 
