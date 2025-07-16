@@ -552,9 +552,8 @@ from pathlib import Path
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.pjit import pjit
 import jax.tree_util
-import tensorflow_datasets as tfds 
+import tensorflow_datasets as tfds
 from jax.experimental import multihost_utils
-from jax import checkpoint
 
 # Assume these are in separate files as per your structure
 from utils.model_loader import load_recurrent_gemma_model
@@ -630,7 +629,6 @@ def main():
         def get_param_sharding(pytree):
             """Defines sharding rules to implement model parallelism."""
             def get_spec(path, param):
-                # This robustly converts the path tuple into a string for matching
                 path_str = "/".join([
                     str(p.idx) if isinstance(p, jax.tree_util.SequenceKey)
                     else p.name if isinstance(p, jax.tree_util.GetAttrKey)
@@ -638,44 +636,21 @@ def main():
                     for p in path
                 ])
                 
-                # Shard the very large embedding and output layers
                 if ('embedder' in path_str or 'output' in path_str) and param.ndim > 1:
                     return PartitionSpec('data_axis', None)
-
-                # Shard the MLP and attention kernels
                 elif ('mlp' in path_str or 'attention' in path_str) and 'kernel' in path_str and param.ndim > 1:
                     return PartitionSpec(None, 'data_axis')
-                    
-                # Replicate all other parameters
                 else:
                     return PartitionSpec()
 
             return jax.tree_util.tree_map_with_path(get_spec, pytree)
 
-        # --- GRADIENT CHECKPOINTING CONFIGURATION ---
-        scan_config = {
-            'scan_axis': 0,
-            'variable_broadcast': 'params',
-            'variable_carry': ['cache'],
-            'remat': checkpoint,
-        }
-
         model, _, params, _ = load_recurrent_gemma_model(
             CKPT_DIR,
             TOK_FILE,
             params_dtype=WEIGHT_DTYPE,
-            scan_config=scan_config  # Pass config to enable checkpointing
+            use_checkpointing=True  # Enable gradient checkpointing
         )
-
-        class ScanShardingHelper:
-            def __init__(self, mesh):
-                self.mesh = mesh
-                self.sequence_axis_name = None
-                self.sequence_axis_index_groups = None
-                self.activations_sharding_spec = PartitionSpec('data_axis')
-                self.rnn_state_sharding_spec = PartitionSpec('data_axis')
-
-        model.scan_sharding_spec = ScanShardingHelper(mesh=device_mesh)
         
         train_dataset, num_train_examples = get_dataset(TRAIN_SPLIT, effective_batch_size * num_devices)
         train_dataset = tfds.as_numpy(train_dataset)
@@ -705,7 +680,6 @@ def main():
         )
         del params
 
-        # Apply the path-based model parallelism sharding rules
         param_rules = get_param_sharding(state_on_cpu.params)
         opt_state_rules = get_param_sharding(state_on_cpu.opt_state)
 
@@ -794,7 +768,6 @@ def main():
             ckpt_manager.wait_until_finished()
             print("Final checkpoint saved and write-operation confirmed.")
             print("\nTraining complete.")
-
 
 if __name__ == "__main__":
     main()
