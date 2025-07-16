@@ -109,6 +109,8 @@
 
 #     print("Data pipeline test complete.")
 
+
+
 import tensorflow as tf
 from datasets import load_from_disk
 from finetuning.config import PRETOKENIZED_DATASET_DIR, MAX_SEQ_LEN
@@ -116,8 +118,8 @@ import jax
 
 def get_dataset(split: str, global_batch_size: int, shuffle: bool = True):
     """
-    Loads the pre-tokenized dataset and prepares a unique, deterministically
-    shuffled shard for each host with the correct batch size.
+    Loads the dataset and returns both the tf.data.Dataset object
+    and the number of examples in the original dataset shard.
     """
     try:
         dataset = load_from_disk(PRETOKENIZED_DATASET_DIR)[split]
@@ -126,6 +128,9 @@ def get_dataset(split: str, global_batch_size: int, shuffle: bool = True):
             f"Pre-tokenized dataset not found at {PRETOKENIZED_DATASET_DIR}. "
             "Please run `python -m finetuning.pretokenize_dataset` first."
         )
+
+    # Get the length of the dataset BEFORE sharding and batching
+    num_examples = len(dataset)
 
     tf_dataset = tf.data.Dataset.from_generator(
         lambda: iter(dataset),
@@ -147,24 +152,17 @@ def get_dataset(split: str, global_batch_size: int, shuffle: bool = True):
         index=jax.process_index()
     )
 
-    # --- THIS IS THE CRITICAL FIX ---
     # Calculate the batch size for each host.
     per_host_batch_size = global_batch_size // jax.process_count()
-    # --- END OF FIX ---
 
     tf_dataset = tf_dataset.padded_batch(
-        per_host_batch_size, # Use the per-host batch size
+        per_host_batch_size,
         padded_shapes={
             "input_ids": [MAX_SEQ_LEN],
             "attention_mask": [MAX_SEQ_LEN],
             "labels": [MAX_SEQ_LEN],
             "segment_pos": [MAX_SEQ_LEN],
         },
-        # padding_values={
-        #     "input_ids": 0, "attention_mask": 0, "labels": -100, "segment_pos": 0,
-        # },
-
-
         padding_values={
             "input_ids": tf.constant(0, dtype=tf.int64),
             "attention_mask": tf.constant(0, dtype=tf.int64),
@@ -176,5 +174,6 @@ def get_dataset(split: str, global_batch_size: int, shuffle: bool = True):
     
     tf_dataset = tf_dataset.prefetch(tf.data.AUTOTUNE)
 
-    return tf_dataset
+    # Return both the dataset and the number of examples
+    return tf_dataset, num_examples
 
