@@ -384,12 +384,179 @@ def apply_accumulated_gradients(state):
     state = state.replace(accum_grads=jax.tree.map(jnp.zeros_like, state.accum_grads))
     return state
 
+
+# def main():
+#     if jax.process_index() == 0:
+#         print("JAX distributed initialized.")
+#         print(f"Total processes: {jax.process_count()}")
+#         print(f"Local devices: {jax.local_device_count()}")
+#         print(f"Global devices: {jax.device_count()}")
+
+#     num_devices = jax.device_count()
+#     with Mesh(jax.devices(), axis_names=('data_axis',)) as device_mesh:
+#         effective_batch_size = BATCH_SIZE
+#         if BATCH_SIZE == 1:
+#             effective_batch_size = 2
+#             if jax.process_index() == 0:
+#                 print("\n" + "="*80)
+#                 print("WARNING: Temporarily overriding per-device BATCH_SIZE to 2 to avoid a library bug.")
+#                 print("="*80 + "\n")
+
+#         data_sharding = NamedSharding(mesh=device_mesh, spec=PartitionSpec('data_axis',))
+#         replicated_sharding = NamedSharding(mesh=device_mesh, spec=PartitionSpec())
+
+#         def get_param_sharding(param_pytree):
+#             def get_spec(param):
+#                 if param.ndim > 1 and param.size > 1_000_000:
+#                     sharding_spec = [None] * (param.ndim - 1) + ['data_axis']
+#                     return PartitionSpec(*sharding_spec)
+#                 else:
+#                     return PartitionSpec()
+#             return jax.tree.map(get_spec, param_pytree)
+
+#         model, _, params, _ = load_recurrent_gemma_model(
+#             CKPT_DIR, TOK_FILE, params_dtype=WEIGHT_DTYPE
+#         )
+
+#         class ScanShardingHelper:
+#             def __init__(self, mesh):
+#                 self.mesh = mesh
+#                 self.sequence_axis_name = None
+#                 self.sequence_axis_index_groups = None
+#                 self.activations_sharding_spec = PartitionSpec('data_axis')
+#                 self.rnn_state_sharding_spec = PartitionSpec('data_axis')
+
+#         model.scan_sharding_spec = ScanShardingHelper(mesh=device_mesh)
+
+#         optimizer = optax.adafactor(learning_rate=LEARNING_RATE)
+#         param_sharding_rules = get_param_sharding(params)
+#         dummy_opt_state = optimizer.init(params)
+
+#         if isinstance(dummy_opt_state, tuple):
+#             opt_state_sharding_rules = tuple(get_param_sharding(s) for s in dummy_opt_state)
+#         else:
+#             opt_state_sharding_rules = get_param_sharding(dummy_opt_state)
+
+#         # Define sharding rules only for the array fields of the state.
+#         state_sharding_spec = TrainState(
+#             step=PartitionSpec(),
+#             apply_fn=None,
+#             params=param_sharding_rules,
+#             tx=None,
+#             opt_state=opt_state_sharding_rules,
+#             accum_grads=param_sharding_rules
+#         )
+
+#         if jax.process_index() == 0:
+#             print("Creating initial training state on CPU...")
+#         train_state_on_cpu = TrainState.create(
+#             apply_fn=model.apply,
+#             params=params,
+#             tx=optimizer,
+#             accum_grads=jax.tree.map(jnp.zeros_like, params)
+#         )
+#         del params, dummy_opt_state
+
+#         sharding_for_put = jax.tree.map(
+#             lambda spec: NamedSharding(device_mesh, spec),
+#             state_sharding_spec,
+#             is_leaf=lambda x: isinstance(x, PartitionSpec)
+#         )
+
+#         if jax.process_index() == 0:
+#             print("Sharding state across all devices...")
+#         p_train_state = jax.device_put(train_state_on_cpu, sharding_for_put)
+
+#         p_train_step = pjit(
+#             train_step,
+#             in_shardings=(state_sharding_spec, data_sharding, replicated_sharding, replicated_sharding),
+#             out_shardings=(state_sharding_spec, replicated_sharding)
+#         )
+#         p_apply_grads = pjit(
+#             apply_accumulated_gradients,
+#             in_shardings=(state_sharding_spec,),
+#             out_shardings=state_sharding_spec,
+#             donate_argnums=(0,)
+#         )
+
+#         rng = jax.random.PRNGKey(0)
+#         base_dropout_rng = jax.random.fold_in(rng, jax.process_index())
+#         ckpt_manager = ocp.CheckpointManager(CHECKPOINT_DIR, ocp.PyTreeCheckpointer())
+#         train_dataset = get_dataset(TRAIN_SPLIT, effective_batch_size * num_devices)
+        
+#         try:
+#             num_train_steps = len(train_dataset) // GRADIENT_ACCUMULATION_STEPS
+#         except TypeError:
+#             num_train_steps = None
+
+#         if jax.process_index() == 0:
+#             print("Starting training with Model Parallelism (pjit)...")
+
+#         for epoch in range(NUM_EPOCHS):
+#             if jax.process_index() == 0:
+#                 print(f"\nEpoch {epoch + 1}/{NUM_EPOCHS}")
+#                 pbar = tqdm(train_dataset, total=num_train_steps, desc=f"Epoch {epoch + 1}")
+#             else:
+#                 pbar = train_dataset
+
+#             total_loss = 0
+#             global_step_counter = 0
+            
+#             for step, batch in enumerate(pbar):
+#                 batch = jax.tree.map(lambda x: x.numpy(), batch)
+#                 sharded_batch = jax.device_put(batch, data_sharding)
+
+#                 p_train_state, loss = p_train_step(p_train_state, sharded_batch, base_dropout_rng, step)
+#                 total_loss += loss.mean()
+
+#                 if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
+#                     p_train_state = p_apply_grads(p_train_state)
+#                     if jax.process_index() == 0:
+#                         avg_loss = total_loss.item() / GRADIENT_ACCUMULATION_STEPS
+#                         pbar.set_postfix(loss=f"{avg_loss:.4f}")
+#                         if num_train_steps is not None:
+#                             pbar.update(1)
+#                         total_loss = 0
+#                         global_step_counter += 1
+
+#             if jax.process_index() == 0 and num_train_steps is None:
+#                  pbar.n = global_step_counter
+#                  pbar.total = global_step_counter
+#                  pbar.close()
+
+#         step += 1
+#         remaining_steps = step % GRADIENT_ACCUMULATION_STEPS
+#         if remaining_steps > 0:
+#             if jax.process_index() == 0:
+#                 print(f"\nApplying final accumulated gradients ({remaining_steps} remaining steps)...")
+#             p_train_state = p_apply_grads(p_train_state)
+        
+#         jax.block_until_ready(p_train_state)
+
+#         if jax.process_index() == 0:
+#             if num_train_steps:
+#                 final_step = num_train_steps * NUM_EPOCHS
+#                 ckpt_manager.save(step=final_step, items=p_train_state)
+#             else:
+#                 ckpt_manager.save(step=global_step_counter, items=p_train_state)
+            
+#             ckpt_manager.wait_until_finished()
+#             print("Final checkpoint saved and write-operation confirmed.")
+
+#         if jax.process_index() == 0:
+#             print("\nTraining complete.")
+
+# if __name__ == "__main__":
+#     from finetuning.pretokenize_dataset import pretokenize_and_save
+#     pretokenize_and_save()
+#     main()
+
+
+
 def main():
     if jax.process_index() == 0:
         print("JAX distributed initialized.")
-        print(f"Total processes: {jax.process_count()}")
-        print(f"Local devices: {jax.local_device_count()}")
-        print(f"Global devices: {jax.device_count()}")
+        print(f"Total processes: {jax.process_count()}; Local devices: {jax.local_device_count()}; Global devices: {jax.device_count()}")
 
     num_devices = jax.device_count()
     with Mesh(jax.devices(), axis_names=('data_axis',)) as device_mesh:
@@ -402,7 +569,6 @@ def main():
                 print("="*80 + "\n")
 
         data_sharding = NamedSharding(mesh=device_mesh, spec=PartitionSpec('data_axis',))
-        replicated_sharding = NamedSharding(mesh=device_mesh, spec=PartitionSpec())
 
         def get_param_sharding(param_pytree):
             def get_spec(param):
@@ -427,54 +593,68 @@ def main():
 
         model.scan_sharding_spec = ScanShardingHelper(mesh=device_mesh)
 
-        optimizer = optax.adafactor(learning_rate=LEARNING_RATE)
-        param_sharding_rules = get_param_sharding(params)
-        dummy_opt_state = optimizer.init(params)
-
-        if isinstance(dummy_opt_state, tuple):
-            opt_state_sharding_rules = tuple(get_param_sharding(s) for s in dummy_opt_state)
-        else:
-            opt_state_sharding_rules = get_param_sharding(dummy_opt_state)
-
-        # Define sharding rules only for the array fields of the state.
-        state_sharding_spec = TrainState(
-            step=PartitionSpec(),
-            apply_fn=None,
-            params=param_sharding_rules,
-            tx=None,
-            opt_state=opt_state_sharding_rules,
-            accum_grads=param_sharding_rules
-        )
+        # --- Optimizer Change: AdamW with Cosine Decay Schedule ---
+        train_dataset_for_size = get_dataset(TRAIN_SPLIT, effective_batch_size * num_devices)
+        total_train_steps = (len(train_dataset_for_size) // GRADIENT_ACCUMULATION_STEPS) * NUM_EPOCHS
 
         if jax.process_index() == 0:
+            print(f"Total training optimizer steps: {total_train_steps}")
+
+        lr_schedule = optax.cosine_decay_schedule(
+            init_value=LEARNING_RATE,
+            decay_steps=total_train_steps,
+            alpha=0.1  # Decay to 10% of the initial learning rate
+        )
+
+        optimizer = optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.adamw(learning_rate=lr_schedule)
+        )
+        # --- End of Optimizer Change ---
+
+        # Create the initial TrainState on the host CPU.
+        if jax.process_index() == 0:
             print("Creating initial training state on CPU...")
-        train_state_on_cpu = TrainState.create(
+        state_on_cpu = TrainState.create(
             apply_fn=model.apply,
             params=params,
             tx=optimizer,
             accum_grads=jax.tree.map(jnp.zeros_like, params)
         )
-        del params, dummy_opt_state
+        del params
 
+        # Create a sharding rule PyTree that matches the state's JAX-visible structure.
+        param_rules = get_param_sharding(state_on_cpu.params)
+        opt_state_rules = jax.tree.map(get_param_sharding, state_on_cpu.opt_state)
+        
+        # Use a dummy state to get the correct PyTree structure for sharding spec
+        # This avoids issues with static fields
+        dummy_sharding_spec = state_on_cpu.replace(
+            step=PartitionSpec(),
+            params=param_rules,
+            opt_state=opt_state_rules,
+            accum_grads=param_rules
+        )
+        
         sharding_for_put = jax.tree.map(
             lambda spec: NamedSharding(device_mesh, spec),
-            state_sharding_spec,
+            dummy_sharding_spec,
             is_leaf=lambda x: isinstance(x, PartitionSpec)
         )
 
         if jax.process_index() == 0:
             print("Sharding state across all devices...")
-        p_train_state = jax.device_put(train_state_on_cpu, sharding_for_put)
+        p_train_state = jax.device_put(state_on_cpu, sharding_for_put)
 
         p_train_step = pjit(
             train_step,
-            in_shardings=(state_sharding_spec, data_sharding, replicated_sharding, replicated_sharding),
-            out_shardings=(state_sharding_spec, replicated_sharding)
+            in_shardings=(type(p_train_state), data_sharding, None, None),
+            out_shardings=(type(p_train_state), None)
         )
         p_apply_grads = pjit(
             apply_accumulated_gradients,
-            in_shardings=(state_sharding_spec,),
-            out_shardings=state_sharding_spec,
+            in_shardings=(type(p_train_state),),
+            out_shardings=type(p_train_state),
             donate_argnums=(0,)
         )
 
@@ -484,17 +664,17 @@ def main():
         train_dataset = get_dataset(TRAIN_SPLIT, effective_batch_size * num_devices)
         
         try:
-            num_train_steps = len(train_dataset) // GRADIENT_ACCUMULATION_STEPS
+            num_train_steps_per_epoch = len(train_dataset) // GRADIENT_ACCUMULATION_STEPS
         except TypeError:
-            num_train_steps = None
+            num_train_steps_per_epoch = None
 
         if jax.process_index() == 0:
-            print("Starting training with Model Parallelism (pjit)...")
+            print("Starting training with AdamW optimizer...")
 
         for epoch in range(NUM_EPOCHS):
             if jax.process_index() == 0:
                 print(f"\nEpoch {epoch + 1}/{NUM_EPOCHS}")
-                pbar = tqdm(train_dataset, total=num_train_steps, desc=f"Epoch {epoch + 1}")
+                pbar = tqdm(train_dataset, total=num_train_steps_per_epoch, desc=f"Epoch {epoch + 1}")
             else:
                 pbar = train_dataset
 
@@ -512,13 +692,14 @@ def main():
                     p_train_state = p_apply_grads(p_train_state)
                     if jax.process_index() == 0:
                         avg_loss = total_loss.item() / GRADIENT_ACCUMULATION_STEPS
-                        pbar.set_postfix(loss=f"{avg_loss:.4f}")
-                        if num_train_steps is not None:
+                        current_lr = lr_schedule(p_train_state.step)
+                        pbar.set_postfix(loss=f"{avg_loss:.4f}", lr=f"{current_lr:.6f}")
+                        if num_train_steps_per_epoch is not None:
                             pbar.update(1)
                         total_loss = 0
                         global_step_counter += 1
 
-            if jax.process_index() == 0 and num_train_steps is None:
+            if jax.process_index() == 0 and num_train_steps_per_epoch is None:
                  pbar.n = global_step_counter
                  pbar.total = global_step_counter
                  pbar.close()
@@ -533,8 +714,8 @@ def main():
         jax.block_until_ready(p_train_state)
 
         if jax.process_index() == 0:
-            if num_train_steps:
-                final_step = num_train_steps * NUM_EPOCHS
+            if num_train_steps_per_epoch:
+                final_step = num_train_steps_per_epoch * NUM_EPOCHS
                 ckpt_manager.save(step=final_step, items=p_train_state)
             else:
                 ckpt_manager.save(step=global_step_counter, items=p_train_state)
@@ -544,6 +725,7 @@ def main():
 
         if jax.process_index() == 0:
             print("\nTraining complete.")
+
 
 if __name__ == "__main__":
     from finetuning.pretokenize_dataset import pretokenize_and_save
