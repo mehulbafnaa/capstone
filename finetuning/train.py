@@ -244,12 +244,216 @@
 #     main()
 
 
+#!/usr/bin/env python3
+"""
+TPU v4-16 compatible training loop for Recurrent-Gemma-2B
+Full-parameter sharding (FSDP) to prevent per-core HBM OOM
+"""
 
-import jax, os
-os.environ["JAX_PLATFORMS"] = "tpu"   # be explicit
-print("Devices :", jax.devices())
-print("Local devices :", jax.local_devices())
-print("Process count :", jax.process_count())
+import jax
+import jax.numpy as jnp
+import optax
+import orbax.checkpoint as ocp
+from flax.training import train_state
+from flax.struct import field
+from tqdm import tqdm
+import time
+from pathlib import Path
+from jax.sharding import Mesh, PartitionSpec, NamedSharding
+from jax.experimental.pjit import pjit
+import jax.tree_util
+import tensorflow_datasets as tfds
+from jax.experimental import multihost_utils
 
-for d in jax.devices():
-    print(d, d.memory_limit())   # 32 GiB (≈ 34 359 738 368 bytes)
+from utils.model_loader import load_recurrent_gemma_model
+from finetuning.data_pipeline import get_dataset
+from finetuning.config import (
+    CKPT_DIR,
+    TOK_FILE,
+    TRAIN_SPLIT,
+    LEARNING_RATE,
+    BATCH_SIZE,
+    NUM_EPOCHS,
+    GRADIENT_ACCUMULATION_STEPS,
+    CHECKPOINT_DIR,
+    WEIGHT_DTYPE,
+)
+
+# ---------------- TrainState ----------------
+class TrainState(train_state.TrainState):
+    accum_grads: any
+    apply_fn: callable = field(pytree_node=False)
+    tx: optax.GradientTransformation = field(pytree_node=False)
+
+# ---------------- loss ----------------
+@jax.jit
+def calculate_loss(logits, labels):
+    vocab_size = logits.shape[-1]
+    logits_flat = logits.reshape(-1, vocab_size)
+    labels_flat = labels.reshape(-1)
+    loss_mask = labels_flat != -100
+    losses = optax.softmax_cross_entropy_with_integer_labels(
+        logits=logits_flat.astype(jnp.float32), labels=labels_flat
+    )
+    masked_losses = jnp.where(loss_mask, losses, 0.0)
+    return jnp.sum(masked_losses) / (jnp.sum(loss_mask) + 1e-8)
+
+# ---------------- step ----------------
+def train_step(state, batch, base_dropout_rng, step_num):
+    step_dropout_key = jax.random.fold_in(base_dropout_rng, step_num)
+
+    def loss_fn(params):
+        logits = state.apply_fn(
+            {"params": params},
+            tokens=batch["input_ids"],
+            segment_pos=batch["segment_pos"],
+            rngs={"dropout": step_dropout_key},
+        )[0]
+        return calculate_loss(logits, batch["labels"])
+
+    grad_fn = jax.value_and_grad(loss_fn)
+    loss, grads = grad_fn(state.params)
+    state = state.replace(
+        accum_grads=jax.tree.map(lambda x, y: x + y, state.accum_grads, grads)
+    )
+    return state, loss
+
+def apply_accumulated_gradients(state):
+    avg_grads = jax.tree.map(lambda x: x / GRADIENT_ACCUMULATION_STEPS, state.accum_grads)
+    state = state.apply_gradients(grads=avg_grads)
+    state = state.replace(accum_grads=jax.tree.map(jnp.zeros_like, state.accum_grads))
+    return state
+
+# ---------------- main ----------------
+def main():
+    if jax.process_index() == 0:
+        print("JAX distributed initialized.")
+        print(f"Total processes: {jax.process_count()}; Global devices: {jax.device_count()}")
+
+    # --- single axis = FSDP across all 8 cores ---
+    with Mesh(jax.devices(), axis_names=("fsdp",)) as mesh:
+
+        # ---------- FSDP sharding helpers ----------
+        def fsdp_sharding(pytree):
+            def spec(_, x):
+                if x.ndim == 2 and x.shape[0] > 1:  # weight matrices
+                    return PartitionSpec("fsdp", None)
+                return PartitionSpec()
+            return jax.tree_util.tree_map_with_path(spec, pytree)
+
+        model, _, params, _ = load_recurrent_gemma_model(
+            CKPT_DIR,
+            TOK_FILE,
+            params_dtype=WEIGHT_DTYPE,
+            use_checkpointing=True,
+        )
+
+        # ---------- dataset ----------
+        train_dataset, num_train_examples = get_dataset(
+            TRAIN_SPLIT, BATCH_SIZE * jax.process_count()
+        )
+        train_dataset = tfds.as_numpy(train_dataset)
+
+        global_batch_size = BATCH_SIZE * jax.process_count()
+        steps_per_epoch = (num_train_examples // global_batch_size) // GRADIENT_ACCUMULATION_STEPS
+        total_train_steps = steps_per_epoch * NUM_EPOCHS
+
+        if jax.process_index() == 0:
+            print(f"Total optimizer steps: {total_train_steps}")
+
+        # ---------- optimizer ----------
+        lr_schedule = optax.cosine_decay_schedule(
+            init_value=LEARNING_RATE, decay_steps=total_train_steps, alpha=0.1
+        )
+        optimizer = optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.adamw(learning_rate=lr_schedule),
+        )
+
+        # ---------- initial state ----------
+        state_on_cpu = TrainState.create(
+            apply_fn=model.apply,
+            params=params,
+            tx=optimizer,
+            accum_grads=jax.tree.map(jnp.zeros_like, params),
+        )
+        del params
+
+        state_sharding = state_on_cpu.replace(
+            step=PartitionSpec(),
+            params=fsdp_sharding(state_on_cpu.params),
+            opt_state=fsdp_sharding(state_on_cpu.opt_state),
+            accum_grads=fsdp_sharding(state_on_cpu.accum_grads),
+        )
+        sharding_for_put = jax.tree.map(
+            lambda spec: NamedSharding(mesh, spec), state_sharding
+        )
+        p_train_state = jax.device_put(state_on_cpu, sharding_for_put)
+
+        # ---------- data shard along same axis ----------
+        data_sharding = NamedSharding(mesh, PartitionSpec("fsdp", None))
+
+        # ---------- pjit functions ----------
+        p_train_step = pjit(
+            train_step,
+            in_shardings=(state_sharding, data_sharding, None, None),
+            out_shardings=(state_sharding, None),
+        )
+        p_apply_grads = pjit(
+            apply_accumulated_gradients,
+            in_shardings=(state_sharding,),
+            out_shardings=state_sharding,
+            donate_argnums=(0,),
+        )
+
+        # ---------- training loop ----------
+        rng = jax.random.PRNGKey(0)
+        base_dropout_rng = jax.random.fold_in(rng, jax.process_index())
+
+        ckpt_manager = ocp.CheckpointManager(CHECKPOINT_DIR, ocp.PyTreeCheckpointer())
+
+        for epoch in range(NUM_EPOCHS):
+            if jax.process_index() == 0:
+                print(f"\nEpoch {epoch + 1}/{NUM_EPOCHS}")
+                pbar = tqdm(train_dataset, total=steps_per_epoch, desc=f"Epoch {epoch + 1}")
+            else:
+                pbar = train_dataset
+
+            total_loss = 0
+            for step, batch in enumerate(pbar if jax.process_index() == 0 else train_dataset):
+                sharded_batch = jax.tree_util.tree_map(
+                    lambda x: multihost_utils.host_local_array_to_global_array(
+                        x, mesh, PartitionSpec("fsdp", *([None] * (x.ndim - 1)))
+                    ),
+                    batch,
+                )
+
+                p_train_state, loss = p_train_step(p_train_state, sharded_batch, base_dropout_rng, p_train_state.step)
+                total_loss += loss
+
+                if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
+                    p_train_state = p_apply_grads(p_train_state)
+                    if jax.process_index() == 0:
+                        avg_loss = total_loss.item() / GRADIENT_ACCUMULATION_STEPS
+                        current_lr = lr_schedule(p_train_state.step)
+                        pbar.set_postfix(loss=f"{avg_loss:.4f}", lr=f"{current_lr:.6f}")
+                        if steps_per_epoch is not None:
+                            pbar.update(1)
+                        total_loss = 0
+
+            if jax.process_index() == 0 and steps_per_epoch is None:
+                pbar.close()
+
+        step += 1
+        remaining = step % GRADIENT_ACCUMULATION_STEPS
+        if remaining:
+            p_train_state = p_apply_grads(p_train_state)
+
+        jax.block_until_ready(p_train_state)
+        if jax.process_index() == 0:
+            ckpt_manager.save(step=p_train_state.step, items=p_train_state)
+            ckpt_manager.wait_until_finished()
+            print("\nTraining complete.")
+
+if __name__ == "__main__":
+    main()
