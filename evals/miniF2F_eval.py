@@ -324,7 +324,7 @@ class UnifiedMiniF2FTester:
         
         # Load miniF2F-lean4 dataset
         print(f"Host {jax.process_index()}: Loading miniF2F-lean4 dataset...")
-        dataset = load_dataset("hoskinson-center/minif2f-lean4", split=split, trust_remote_code=True)
+        dataset = load_dataset("EHaimingW/miniF2F-lean4", split=split, trust_remote_code=True)
         dataset = list(dataset)
         print(f"Host {jax.process_index()}: Loaded {len(dataset)} examples from {split} split")
         
