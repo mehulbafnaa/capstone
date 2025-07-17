@@ -573,6 +573,11 @@ def main():
         if jax.process_index() == 0:
             print_tensor_stats(params, "Parameter shapes")
 
+        # !!! ADD THIS DEBUG LINE !!!
+        if jax.process_index() == 0:
+            print(f"-----> SANITY CHECK: Model object configured with vocab_size = {model.config.vocab_size} <-----")
+
+
         # 2) Dataset
         ds, n_examples = get_dataset(TRAIN_SPLIT, BATCH_SIZE * jax.process_count())
         ds = tfds.as_numpy(ds)
