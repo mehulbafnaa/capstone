@@ -346,7 +346,7 @@ class UnifiedMiniF2FTester:
         with tqdm(total=len(batches), desc=pbar_desc, position=jax.process_index()) as pbar:
             for batch in batches:
                 prompts = [self.create_minif2f_prompt(ex, few_shot_examples) for ex in batch]
-                inference_results = self.sampler(prompts, total_generation_steps=100000)
+                inference_results = self.sampler(prompts, total_generation_steps=1024)
 
                 for i, example in enumerate(batch):
                     generated_tactics = inference_results.text[i].split('</problem>')[0].strip()
