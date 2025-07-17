@@ -250,3 +250,6 @@ os.environ["JAX_PLATFORMS"] = "tpu"   # be explicit
 print("Devices :", jax.devices())
 print("Local devices :", jax.local_devices())
 print("Process count :", jax.process_count())
+
+for d in jax.devices():
+    print(d, d.memory_limit())   # 32 GiB (≈ 34 359 738 368 bytes)
