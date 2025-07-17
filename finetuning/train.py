@@ -568,7 +568,7 @@ def main():
 
         # 1) Load model
         model, _, params, _ = load_recurrent_gemma_model(
-            CKPT_DIR, TOK_FILE, params_dtype=WEIGHT_DTYPE, use_checkpointing=True
+            CKPT_DIR, TOK_FILE, params_dtype=WEIGHT_DTYPE, use_checkpointing=False
         )
         if jax.process_index() == 0:
             print_tensor_stats(params, "Parameter shapes")
