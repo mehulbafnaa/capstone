@@ -5,7 +5,7 @@ from datasets import load_dataset, DatasetDict
 import sentencepiece as spm
 from tqdm import tqdm
 
-from finetuning.config import DATASET_NAME, TRAIN_SPLIT, VALIDATION_SPLIT, TOK_FILE, MAX_SEQ_LEN, PRETOKENIZED_DATASET_DIR
+from finetuning.config import DATASET_NAME, TRAIN_SPLIT, VALIDATION_SPLIT, TOK_FILE, MAX_SEQ_LEN, PRETOKENIZED_DATASET_DIR, MAX_TRAIN_EXAMPLES 
 
 def pretokenize_and_save():
     """
@@ -22,6 +22,7 @@ def pretokenize_and_save():
     print(f"Loading dataset '{DATASET_NAME}'...")
     # Load the entire dataset, as it only has a 'train' split
     full_dataset = load_dataset(DATASET_NAME, split='train', trust_remote_code=True)
+    full_dataset = full_dataset.select(range(MAX_TRAIN_EXAMPLES)
 
     # Create a 90/10 train/validation split
     print("Creating train/validation split...")

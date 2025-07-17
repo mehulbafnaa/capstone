@@ -28,7 +28,6 @@ from finetuning.config import (
     GRADIENT_ACCUMULATION_STEPS,
     CHECKPOINT_DIR,
     WEIGHT_DTYPE,
-    DATASET_PROPORTION,
 )
 
 # Custom TrainState with static fields for non-array JAX-tree components

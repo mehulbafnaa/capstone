@@ -14,10 +14,6 @@ TRAIN_SPLIT = "train"
 VALIDATION_SPLIT = "validation"
 PRETOKENIZED_DATASET_DIR = REPO_ROOT / "pretokenized_dataset"
 
-DATASET_PROPORTION = 0.5
-
-
-
 # Finetuning Hyperparameters
 LEARNING_RATE = 1e-5
 # This is the PER-DEVICE batch size. The global batch size will be
@@ -25,9 +21,10 @@ LEARNING_RATE = 1e-5
 # A batch size of 4 with a sequence length of 2048 should be safe on a TPU v4.
 BATCH_SIZE = 1 # Per-device batch size. Reduced to 1 to prevent OOM errors.
 NUM_EPOCHS = 1
-MAX_SEQ_LEN = 512 # Maximum sequence length for tokenization
+MAX_SEQ_LEN = 2048 # Maximum sequence length for tokenization
 
-GRADIENT_ACCUMULATION_STEPS = 8
+GRADIENT_ACCUMULATION_STEPS = 16
+MAX_TRAIN_EXAMPLES = 8_000
 
 # Checkpointing Configuration
 CHECKPOINT_DIR = REPO_ROOT / "finetuning_checkpoints"
