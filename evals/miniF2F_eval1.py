@@ -320,18 +320,32 @@ class UnifiedMiniF2FTester:
         # Phase 3: Deterministic global merge (rank 0 only)
         # ------------------------------------------------------------------
         multihost_utils.sync_global_devices("eval_done")
+        # if jax.process_index() == 0:
+        #     combined = []
+        #     for host_id in range(jax.process_count()):
+        #         shard_path = output_file.with_suffix('.json').with_name(
+        #             f"{output_file.stem}_host_{host_id}.json"
+        #         )
+        #         with open(shard_path) as f:
+        #             for line in f:
+        #                 if line.strip():
+        #                     combined.append(json.loads(line))
+
+        #     final_path = output_file.with_suffix('.json').with_name(f"{output_file.stem}.json")
+        #     with open(final_path, 'w') as f:
+        #         json.dump(combined, f, indent=2)
+        #     print(f"Combined results saved to {final_path}")
         if jax.process_index() == 0:
             combined = []
             for host_id in range(jax.process_count()):
-                shard_path = output_file.with_suffix('.json').with_name(
-                    f"{output_file.stem}_host_{host_id}.json"
-                )
+                # build the correct shard file name
+                shard_path = REPO_ROOT / f"minif2f_{split}_3-shot_host_{host_id}.json"
                 with open(shard_path) as f:
                     for line in f:
                         if line.strip():
                             combined.append(json.loads(line))
 
-            final_path = output_file.with_suffix('.json').with_name(f"{output_file.stem}.json")
+            final_path = REPO_ROOT / f"minif2f_{split}_3-shot.json"
             with open(final_path, 'w') as f:
                 json.dump(combined, f, indent=2)
             print(f"Combined results saved to {final_path}")
