@@ -441,7 +441,7 @@ class UnifiedMiniF2FTester:
 def main():
     parser = argparse.ArgumentParser(description="Run miniF2F-lean4 evaluation on single or multi-host TPUs.")
     parser.add_argument('--dev', action='store_true', help='Run in development mode.')
-    parser.add_argument('--split', choices=['validation', 'test'], default='validation', help='Dataset split to use.')
+    parser.add_argument('--split', choices=['valid', 'test'], default='valid', help='Dataset split to use.')
     args = parser.parse_args()
 
     jax.distributed.initialize()
