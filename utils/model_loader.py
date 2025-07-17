@@ -66,8 +66,6 @@ import sentencepiece as spm
 from typing import Any, Tuple
 import jax
 import jax.numpy as jnp
-# Note: flax.linen is not used directly here, but might be needed elsewhere
-# import flax.linen as nn
 
 def load_recurrent_gemma_model(
     ckpt_dir: Path,
@@ -86,8 +84,6 @@ def load_recurrent_gemma_model(
     print(f"Loading model from: {ckpt_dir}")
     print(f"Loading tokenizer from: {tok_file}")
 
-    # ===== FIX STARTS HERE =====
-
     # 1. Load tokenizer FIRST to get the correct vocabulary size
     vocab = spm.SentencePieceProcessor(model_file=str(tok_file))
 
@@ -100,12 +96,10 @@ def load_recurrent_gemma_model(
 
     # 3. Get the base model config from the preset
     preset = rg.Preset.RECURRENT_GEMMA_2B_V1
-    cfg = rg.GriffinConfig.from_preset(preset)
+    base_cfg = rg.GriffinConfig.from_preset(preset)
 
-    # 4. CRITICAL: Update the config with the correct vocab size from the tokenizer
-    cfg.vocab_size = vocab.vocab_size()
-
-    # ===== FIX ENDS HERE =====
+    # 4. CRITICAL: Create a NEW config with the vocab_size replaced
+    cfg = base_cfg.replace(vocab_size=vocab.vocab_size())
 
     # Select the model class based on the checkpointing flag
     if use_checkpointing:
@@ -116,7 +110,6 @@ def load_recurrent_gemma_model(
 
     model = model_cls(cfg)
 
-    # The sampler can now be created with the correctly configured model
     sampler = rg.Sampler(
         model=model,
         vocab=vocab,
