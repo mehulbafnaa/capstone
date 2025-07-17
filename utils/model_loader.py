@@ -99,7 +99,7 @@ def load_recurrent_gemma_model(
     base_cfg = rg.GriffinConfig.from_preset(preset)
 
     # 4. CRITICAL: Create a NEW config with the vocab_size replaced
-    cfg = base_cfg.replace(vocab_size=vocab.vocab_size())
+    cfg = base_cfg._replace(vocab_size=vocab.vocab_size())
 
     # Select the model class based on the checkpointing flag
     if use_checkpointing:
