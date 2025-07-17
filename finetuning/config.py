@@ -25,7 +25,7 @@ LEARNING_RATE = 1e-5
 # A batch size of 4 with a sequence length of 2048 should be safe on a TPU v4.
 BATCH_SIZE = 1 # Per-device batch size. Reduced to 1 to prevent OOM errors.
 NUM_EPOCHS = 1
-MAX_SEQ_LEN = 1024 # Maximum sequence length for tokenization
+MAX_SEQ_LEN = 512 # Maximum sequence length for tokenization
 
 GRADIENT_ACCUMULATION_STEPS = 8
 
