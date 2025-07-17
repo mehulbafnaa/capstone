@@ -612,19 +612,35 @@ def main():
         data_sharding = NamedSharding(mesh, PartitionSpec("fsdp", None))
 
         # 7) Shard-map the two functions that invoke the Mosaic kernel
+        # p_train_step = shard_map(
+        #     _train_step_core,
+        #     mesh=mesh,
+        #     in_specs=(sharding_spec, data_sharding, None, None),
+        #     out_specs=(sharding_spec, None),
+        #     check_rep=False,
+        # )
+        # p_apply_grads = shard_map(
+        #     apply_grads,
+        #     mesh=mesh,
+        #     in_specs=(sharding_spec,),
+        #     out_specs=sharding_spec,
+        # )
+
+
+        # 7) Strip the NamedSharding wrappers → keep only the PartitionSpec
         p_train_step = shard_map(
             _train_step_core,
             mesh=mesh,
-            in_specs=(sharding_spec, data_sharding, None, None),
-            out_specs=(sharding_spec, None),
+            in_specs=(sharding_spec, data_sharding.spec, None, None),  # .spec
+            out_specs=(sharding_spec, None),                           # .spec
             check_rep=False,
         )
         p_apply_grads = shard_map(
             apply_grads,
             mesh=mesh,
-            in_specs=(sharding_spec,),
-            out_specs=sharding_spec,
-        )
+            in_specs=(sharding_spec,),         # sharding_spec is already a tree of specs
+            out_specs=sharding_spec,           # same here
+)
 
         # 8) Training loop
         rng = jax.random.PRNGKey(0)
