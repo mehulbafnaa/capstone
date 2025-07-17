@@ -139,7 +139,7 @@ class UnifiedTester:
             for batch in batches:
                 prompts = [self.create_few_shot_prompt(ex, few_shot_examples) for ex in batch]
                 # The sampler uses the local TPUs attached to this host's process.
-                inference_results = self.sampler(prompts, total_generation_steps=1000)
+                inference_results = self.sampler(prompts, total_generation_steps=1024)
 
                 for i, example in enumerate(batch):
                     # Robustly extract content before the first stop tag
