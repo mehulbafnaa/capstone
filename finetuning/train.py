@@ -615,15 +615,15 @@ def main():
         p_train_step = shard_map(
             _train_step_core,
             mesh=mesh,
-            in_shardings=(sharding_spec, data_sharding, None, None),
-            out_shardings=(sharding_spec, None),
+            in_specs=(sharding_spec, data_sharding, None, None),
+            out_specs=(sharding_spec, None),
             check_rep=False,
         )
         p_apply_grads = shard_map(
             apply_grads,
             mesh=mesh,
-            in_shardings=(sharding_spec,),
-            out_shardings=sharding_spec,
+            in_specs=(sharding_spec,),
+            out_specs=sharding_spec,
         )
 
         # 8) Training loop
