@@ -290,7 +290,7 @@ class UnifiedMiniF2FTester:
         cfg = rg.GriffinConfig.from_flax_params_or_variables(self.params, preset=preset)
         self.model = rg.Griffin(cfg)
         self.vocab = spm.SentencePieceProcessor(model_file=str(self.tok_file))
-        self.sampler = rg.Sampler(model=self.model, vocab=self.vocab, params=self.params, deterministic_sampling=True, is_it_model=True)
+        self.sampler = rg.Sampler(model=self.model, vocab=self.vocab, params=self.params, deterministic_sampling=True, is_it_model=False)
 
     def create_minif2f_prompt(self, target_example: dict, few_shot_examples: list) -> str:
         """Create specialized prompt for miniF2F mathematical problems"""
@@ -346,7 +346,7 @@ class UnifiedMiniF2FTester:
         with tqdm(total=len(batches), desc=pbar_desc, position=jax.process_index()) as pbar:
             for batch in batches:
                 prompts = [self.create_minif2f_prompt(ex, few_shot_examples) for ex in batch]
-                inference_results = self.sampler(prompts, total_generation_steps=1000)
+                inference_results = self.sampler(prompts, total_generation_steps=100000)
 
                 for i, example in enumerate(batch):
                     generated_tactics = inference_results.text[i].split('</problem>')[0].strip()
