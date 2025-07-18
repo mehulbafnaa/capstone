@@ -17,7 +17,7 @@ PRETOKENIZED_DATASET_DIR = REPO_ROOT / "pretokenized_dataset"
 # Finetuning Hyperparameters
 LEARNING_RATE = 1e-5
 
-BATCH_SIZE = 1 # Per-device batch size. Reduced to 1 to prevent OOM errors.
+BATCH_SIZE = 4 # Per-device batch size. Reduced to 1 to prevent OOM errors.
 NUM_EPOCHS = 1
 MAX_SEQ_LEN = 512 # Maximum sequence length for tokenization
 
