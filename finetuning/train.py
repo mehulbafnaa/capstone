@@ -1262,6 +1262,8 @@ def get_config():
     c.max_seq_len = 2048
     c.dataset_fraction = 0.001  
     c.weight_dtype = jnp.bfloat16
+    c.data_axis = 'data'
+    c.model_axis = 'model'
     return c
 
 
