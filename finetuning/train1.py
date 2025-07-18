@@ -603,7 +603,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import functools
 from typing import Any, Mapping
-
+import numpy as np 
 import chex
 import jax
 import jax.numpy as jnp
