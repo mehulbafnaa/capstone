@@ -519,7 +519,7 @@ def main(argv):
     )
 
     eval_step_sharded = shard_map(
-        partial(_eval_step, model=model. empty_cache=empty_cache),
+        partial(_eval_step, model=model, empty_cache=empty_cache),
         mesh=mesh,
         in_specs=(state_pspec, batch_pspec),
         out_specs=None,
