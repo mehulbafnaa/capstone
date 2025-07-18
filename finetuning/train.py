@@ -827,6 +827,113 @@ def eval_step(state, batch):
 
 
 
+# # -----------------------------------------------------------------------------
+# # 5. Main Execution
+# # -----------------------------------------------------------------------------
+# def main(argv):
+#     if len(argv) > 1:
+#         raise app.UsageError("Too many command-line arguments.")
+    
+#     ### START OF CHANGES ###
+#     config = FLAGS.config
+#     # Check if a config file was passed. If not, load the default.
+#     if config is None:
+#         logging.warning("No --config file specified. Using default configuration from get_config().")
+#         config = get_config()
+#     ### END OF CHANGES ###
+
+#     # Convert string dtype back to jnp dtype
+#     config.weight_dtype = getattr(jnp, config.weight_dtype)
+
+#     jax.distributed.initialize()
+#     tf.config.set_visible_devices([], "GPU")
+
+#     mesh = Mesh(jax.devices(), (config.data_axis, config.model_axis))
+    
+#     logging.set_verbosity(logging.INFO)
+#     if jax.process_index() == 0:
+#         logging.info("--- Memory-Optimized Training Run ---")
+#         logging.info(f"JAX initialized on {jax.process_count()} hosts with {jax.local_device_count()} devices each.")
+#         logging.info(f"Device mesh created with shape: {mesh.shape}")
+#         logging.info(f"Using Activation Rematerialization: {config.use_remat}")
+
+#     rng = jax.random.PRNGKey(42)
+#     os.makedirs(config.ckpt_dir, exist_ok=True)
+    
+#     train_iterator = create_dataset_iterator(config, config.train_split, mesh, config.global_batch_size)
+#     eval_iterator = create_dataset_iterator(config, config.eval_split, mesh, config.eval_batch_size)
+
+#     model, params, sharding = load_and_shard_model(config, mesh)
+    
+#     optimizer = optax.MultiSteps(
+#         optax.chain(
+#             optax.clip_by_global_norm(config.grad_clip_norm),
+#             optax.adafactor(learning_rate=config.learning_rate)
+#         ),
+#         every_k_schedule=config.grad_accum_steps
+#     )
+    
+#     state = TrainingState.create(apply_fn=model.apply, params=params, tx=optimizer)
+#     del params
+
+#     checkpointer = ocp.PyTreeCheckpointer()
+#     ckpt_mngr = ocp.CheckpointManager(config.ckpt_dir, checkpointer, options=ocp.CheckpointManagerOptions(max_to_keep=1))
+    
+#     p_train_step = pjit(train_step, in_shardings=(sharding, None), out_shardings=(sharding, None))
+#     p_eval_step = pjit(eval_step, in_shardings=(sharding, None), out_shardings=None)
+    
+#     if jax.process_index() == 0: logging.info("🚀 Starting training...")
+
+#     best_eval_loss = float('inf')
+#     for epoch in range(config.num_epochs):
+#         train_metrics = []
+#         num_train_steps = config.eval_steps * 5
+#         if jax.process_index() == 0:
+#             pbar = tqdm(total=num_train_steps, desc=f"Epoch {epoch+1}/{config.num_epochs}")
+
+#         for step in range(1, num_train_steps + 1):
+#             batch = next(train_iterator)
+#             rng, step_rng = jax.random.split(rng)
+            
+#             state, metrics = p_train_step(state, batch, step_rng)
+#             train_metrics.append(metrics)
+
+#             if jax.process_index() == 0: pbar.update(1)
+
+#             if state.step > 0 and state.step % config.eval_steps == 0:
+#                 multihost_utils.sync_global_devices("eval_start")
+#                 eval_loss = 0.0
+#                 eval_batches = 50
+#                 for _ in range(eval_batches):
+#                     eval_batch = next(eval_iterator)
+#                     eval_metrics = p_eval_step(state, eval_batch)
+#                     eval_loss += eval_metrics['loss']
+                
+#                 eval_loss = multihost_utils.process_allgather(eval_loss).mean() / eval_batches
+#                 train_loss_gathered = multihost_utils.process_allgather([m['loss'] for m in train_metrics])
+#                 avg_train_loss = jnp.mean(train_loss_gathered)
+                
+#                 if jax.process_index() == 0:
+#                     pbar.set_postfix(train_loss=f"{avg_train_loss:.4f}", eval_loss=f"{eval_loss:.4f}")
+#                     logging.info(f"\nStep {state.step}: Train Loss={avg_train_loss:.4f}, Eval Loss={eval_loss:.4f}")
+#                     train_metrics.clear()
+                    
+#                     if eval_loss < best_eval_loss:
+#                         best_eval_loss = eval_loss
+#                         logging.info(f"New best eval loss! Saving checkpoint to {config.ckpt_dir}")
+#                         ckpt_mngr.save(step=int(state.step), args=ocp.args.StandardSave(state))
+                
+#                 if jax.process_index() == 0: pbar.reset(total=num_train_steps)
+#         if jax.process_index() == 0: pbar.close()
+
+#     ckpt_mngr.wait_until_finished()
+#     if jax.process_index() == 0: logging.info("✅ Training complete.")
+
+
+# In train.py
+
+# ... (keep all the code from before the main function) ...
+
 # -----------------------------------------------------------------------------
 # 5. Main Execution
 # -----------------------------------------------------------------------------
@@ -834,16 +941,17 @@ def main(argv):
     if len(argv) > 1:
         raise app.UsageError("Too many command-line arguments.")
     
-    ### START OF CHANGES ###
     config = FLAGS.config
-    # Check if a config file was passed. If not, load the default.
     if config is None:
         logging.warning("No --config file specified. Using default configuration from get_config().")
         config = get_config()
-    ### END OF CHANGES ###
 
-    # Convert string dtype back to jnp dtype
-    config.weight_dtype = getattr(jnp, config.weight_dtype)
+    ### START OF FIX ###
+    # Only convert dtype from string if it is a string. If using the default
+    # config, it's already a jnp object.
+    if isinstance(config.weight_dtype, str):
+        config.weight_dtype = getattr(jnp, config.weight_dtype)
+    ### END OF FIX ###
 
     jax.distributed.initialize()
     tf.config.set_visible_devices([], "GPU")
