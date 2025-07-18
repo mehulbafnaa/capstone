@@ -623,6 +623,8 @@ from flax.training import train_state
 from flax.linen import remat
 import tensorflow as tf
 from datasets import load_dataset
+from flax.core import freeze
+from jax.tree_util import tree_map_with_path
 
 from ml_collections import config_flags, ConfigDict
 from absl import app, flags, logging
@@ -640,6 +642,19 @@ config_flags.DEFINE_config_file("config", help_string="Path to configuration fil
 # ------------------------------------------------------------------
 def _abs_path(p: str) -> str:
     return os.path.abspath(os.path.expanduser(os.path.expandvars(p)))
+
+
+def _make_state_sharding(state, params_shardings):
+    """Return a TrainState whose leaves are either:
+       - the corresponding sharding for params, or
+       - None (=> replicated) for every other field.
+    """
+    def _map(path, value):
+        # If this leaf sits under state.params, use the supplied sharding.
+        if path and path[0] == "params":
+            return jtu.tree_get(params_shardings, path[1:])
+        return None  # replicate everything else
+    return jtu.tree_map_with_path(_map, state)
 
 # ------------------------------------------------------------------
 # default config
@@ -863,14 +878,7 @@ def main(argv):
     )
 
 
-        # Build a TrainState-shaped sharding tree
-    state_sharding = TrainState(
-        step=None,                       # scalars are replicated
-        apply_fn=None,         # functions are not sharded
-        params=shardings,                # this is the dict we already built
-        tx=None,                     # optax state is replicated
-        opt_state=None       # optax state is replicated
-    )
+    state_sharding = _make_state_sharding(state, shardings)
 
     p_train = jax.jit(
         train_step,
@@ -883,19 +891,10 @@ def main(argv):
         eval_step,
         in_shardings=(state_sharding, None),
         out_shardings=None,
-)
+    )
 
-    # p_train = jax.jit(
-    #     train_step,
-    #     in_shardings=(shardings, None, None),
-    #     out_shardings=(shardings, None),
-    #     donate_argnums=(0,),
-    # )
-    # p_eval = jax.jit(
-    #     eval_step,
-    #     in_shardings=(shardings, None),
-    #     out_shardings=None,
-    # )
+
+
 
     best_eval = float("inf")
     for epoch in range(cfg.num_epochs):
