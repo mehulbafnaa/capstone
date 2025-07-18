@@ -590,13 +590,13 @@
 #     app.run(main)
 
 
-
 #!/usr/bin/env python3
 """
 Fine-tune RecurrentGemma-2B on FrenzyMath/Herald_proofs
 Fixed for:
   - InvalidRngError (sharded RNG leaking into Flax)
   - AssertionError inside FrozenDict.__repr__
+  - TypeError: unhashable type: 'dict' from Pallas kernel
 """
 
 import os
@@ -763,9 +763,6 @@ def loss_fn(logits, batch):
     return jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
 
 def _train_step(state, batch, _, model, data_axis_name):
-    """
-    _ is a dummy; we create the RNG locally so it is never sharded.
-    """
     # deterministic but unique key per host / device
     local_key = jax.random.PRNGKey(
         jax.lax.axis_index(data_axis_name) +
@@ -777,13 +774,12 @@ def _train_step(state, batch, _, model, data_axis_name):
     def _loss(p):
         batch_size, seq_len = batch["inputs"].shape
         segment_pos = jnp.broadcast_to(jnp.arange(seq_len), (batch_size, seq_len))
-        logits, _ = model.apply(
-            {"params": p, 'cache': {}},
+        logits = model.apply(
+            {"params": p},
             batch["inputs"],
             segment_pos,
             rngs={"dropout": dropout_rng},
-            mutable=['cache'],
-        )[0]
+        )
         return loss_fn(logits, batch)
 
     loss, grads = jax.value_and_grad(_loss)(state.params)
@@ -794,12 +790,11 @@ def _eval_step(state, batch, model):
     def _loss(p):
         batch_size, seq_len = batch["inputs"].shape
         segment_pos = jnp.broadcast_to(jnp.arange(seq_len), (batch_size, seq_len))
-        logits, _ = model.apply(
-            {"params": p, 'cache': {}},
+        logits = model.apply(
+            {"params": p},
             batch["inputs"],
             segment_pos,
-            mutable=['cache'],
-        )[0]
+        )
         return loss_fn(logits, batch)
 
     loss = _loss(state.params)
