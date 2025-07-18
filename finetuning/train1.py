@@ -625,16 +625,52 @@ FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", help_string="Path to configuration file.")
 
 
+# # ------------------------------------------------------------------
+# # config
+# # ------------------------------------------------------------------
+# def get_config():
+#     c = ConfigDict()
+#     c.model_path = "2b-it/2b-it"          # adapt if needed
+#     c.tokenizer_path = "2b-it/tokenizer.model"
+#     c.ckpt_dir = "finetuning_checkpoints"
+
+#     c.learning_rate = 1e-4
+#     c.num_epochs = 3
+#     c.global_batch_size = 32
+#     c.grad_clip_norm = 1.0
+#     c.grad_accum_steps = 8
+
+#     c.eval_steps = 250
+#     c.eval_batch_size = 32
+
+#     c.dataset_name = "FrenzyMath/Herald_proofs"
+#     c.train_split = "train"
+#     c.eval_split = "valid"
+#     c.max_seq_len = 2048
+#     c.dataset_fraction = 0.001
+#     c.weight_dtype = jnp.bfloat16
+#     c.data_axis = "data"
+#     c.model_axis = "model"
+#     return c
+
+
 # ------------------------------------------------------------------
-# config
+# helpers
+# ------------------------------------------------------------------
+def _abs_path(p: str) -> str:
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(p)))
+
+
+# ------------------------------------------------------------------
+# default config
 # ------------------------------------------------------------------
 def get_config():
     c = ConfigDict()
-    c.model_path = "2b-it/2b-it"          # adapt if needed
-    c.tokenizer_path = "2b-it/tokenizer.model"
-    c.ckpt_dir = "finetuning_checkpoints"
+    c.model_path = _abs_path("2b-it/2b-it")
+    c.tokenizer_path = _abs_path("2b-it/tokenizer.model")
+    c.ckpt_dir = _abs_path("finetuning_checkpoints")
 
-    c.learning_rate = 1e-4
+    c.learning_rate = 1e-5
     c.num_epochs = 3
     c.global_batch_size = 32
     c.grad_clip_norm = 1.0
@@ -652,7 +688,6 @@ def get_config():
     c.data_axis = "data"
     c.model_axis = "model"
     return c
-
 
 # ------------------------------------------------------------------
 # data pipeline (re-uses Colab logic)
