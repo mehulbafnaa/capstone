@@ -461,7 +461,6 @@ def _train_step(state, batch, rng, model):
             segment_pos=jnp.broadcast_to(
                 jnp.arange(batch["inputs"].shape[-1]), batch["inputs"].shape
             ),
-            cache=cache,
             rngs={"dropout": dropout_rng},
         )[0]
         return loss_fn(logits, batch)
@@ -481,7 +480,6 @@ def _eval_step(state, batch, model):
             segment_pos=jnp.broadcast_to(
                 jnp.arange(batch["inputs"].shape[-1]), batch["inputs"].shape
             ),
-            cache=cache
         )[0]
         return loss_fn(logits, batch)
 
