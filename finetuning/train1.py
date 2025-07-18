@@ -836,7 +836,14 @@ def main(argv):
     jax.distributed.initialize()
     tf.config.set_visible_devices([], "GPU")
 
-    devices = jax.devices()
+    # devices = jax.devices()
+    # mesh = Mesh(
+    #     devices.reshape(jax.process_count(), len(devices) // jax.process_count()),
+    #     (cfg.data_axis, cfg.model_axis),
+    # )
+
+
+    devices = jnp.array(jax.devices())
     mesh = Mesh(
         devices.reshape(jax.process_count(), len(devices) // jax.process_count()),
         (cfg.data_axis, cfg.model_axis),
