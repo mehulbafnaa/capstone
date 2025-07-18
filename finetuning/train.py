@@ -555,8 +555,8 @@ def get_config():
     config = ConfigDict()
 
     # --- Model & Paths ---
-    config.model_path = "~/2b-it/2b-it"
-    config.tokenizer_path = os.path.join(config.model_path, "tokenizer.model")
+    config.model_path = "2b-it/2b-it"
+    config.tokenizer_path = "2b-it/tokenizer.model"
     config.ckpt_dir = "finetuning_checkpoints"
 
     # --- Training & Optimizer ---
