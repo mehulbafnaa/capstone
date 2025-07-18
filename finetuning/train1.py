@@ -483,11 +483,26 @@ def main(argv):
         # ------------------------------------------------------------------
     # Build an empty, hashable cache
     # ------------------------------------------------------------------
-    with jax.default_device(jax.devices()[0]):
-        empty_cache = flax.core.freeze(
-            model.init_cache(batch_size=cfg.global_batch_size, dtype=cfg.weight_dtype,
-            )
-        )
+    # with jax.default_device(jax.devices()[0]):
+    #     empty_cache = flax.core.freeze(
+    #         model.init_cache(batch_size=cfg.global_batch_size, dtype=cfg.weight_dtype,
+    #         )
+    #     )
+
+
+    # ------------------------------------------------------------------
+# Build an empty cache *inside* the mesh so every host can see it
+    # ------------------------------------------------------------------
+    with mesh:
+        empty_cache = jax.jit(
+            lambda: flax.core.freeze(
+                model.init_cache(
+                    batch_size=cfg.global_batch_size,
+                    dtype=cfg.weight_dtype,
+                )
+            ),
+            device=jax.devices()[0],   # build on CPU
+        )()
 
     opt = optax.MultiSteps(
         optax.chain(
