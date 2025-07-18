@@ -612,7 +612,6 @@ import flax.core
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
-from jax.experimental.shard_map import shard_map
 import jax.tree_util as jtu
 from jax.experimental import multihost_utils
 
@@ -778,11 +777,11 @@ def forward_and_loss_fn(
     
     # Forward pass - no cache needed for training
     # Exclude the last token from input as it doesn't appear in targets
-    logits, _ = model(
-        params,
-        input_tokens[:, :-1],
-        positions[:, :-1],
-        cache=None,  # No attention cache needed
+    logits, _ = model.apply(
+        {"params": params},
+        tokens=input_tokens[:, :-1],
+        segment_pos=positions[:, :-1],
+        cache=None,
     )
     
     # Shift tokens for next-token prediction
@@ -807,7 +806,14 @@ def forward_and_loss_fn(
     return loss
 
 
-def _train_step(state, batch, rng, model, data_axis_name):
+@partial(jax.jit, static_argnames=['model', 'optimizer'], donate_argnames=['params', 'opt_state'])
+def train_step(
+    model,
+    params, 
+    optimizer,
+    opt_state,
+    batch,
+):
     """Train step following RecurrentGemma pattern."""
     
     def _loss(params):
@@ -822,27 +828,34 @@ def _train_step(state, batch, rng, model, data_axis_name):
             positions,
         )
 
-    loss, grads = jax.value_and_grad(_loss)(state.params)
-    new_state = state.apply_gradients(grads=grads)
-    return new_state, {"loss": loss}
+    loss, grads = jax.value_and_grad(_loss)(params)
+    
+    # Apply gradients
+    updates, opt_state = optimizer.update(grads, opt_state, params)
+    params = optax.apply_updates(params, updates)
+    
+    return params, opt_state, {"loss": loss}
 
 
-def _eval_step(state, batch, model):
+@partial(jax.jit, static_argnames=['model'])
+def eval_step(
+    model,
+    params,
+    batch,
+):
     """Eval step following RecurrentGemma pattern."""
     
-    def _loss(params):
-        # Build position indices
-        positions = jnp.arange(batch["inputs"].shape[1])[None, :]
-        positions = jnp.broadcast_to(positions, batch["inputs"].shape)
-        
-        return forward_and_loss_fn(
-            params,
-            model,
-            batch["inputs"],
-            positions,
-        )
-
-    loss = _loss(state.params)
+    # Build position indices
+    positions = jnp.arange(batch["inputs"].shape[1])[None, :]
+    positions = jnp.broadcast_to(positions, batch["inputs"].shape)
+    
+    loss = forward_and_loss_fn(
+        params,
+        model,
+        batch["inputs"],
+        positions,
+    )
+    
     return {"loss": loss}
 
 
@@ -872,52 +885,22 @@ def main(argv):
 
     model, params, pspecs = load_and_shard_model(cfg, mesh)
 
-    opt = optax.MultiSteps(
-        optax.chain(
-            optax.clip_by_global_norm(cfg.grad_clip_norm),
-            optax.adafactor(learning_rate=cfg.learning_rate),
-        ),
-        every_k_schedule=cfg.grad_accum_steps,
+    # Create optimizer with gradient accumulation
+    base_opt = optax.chain(
+        optax.clip_by_global_norm(cfg.grad_clip_norm),
+        optax.adafactor(learning_rate=cfg.learning_rate),
     )
+    opt = optax.MultiSteps(base_opt, every_k_schedule=cfg.grad_accum_steps)
+    opt_state = opt.init(params)
 
-    # Create train state but note we won't use state.apply_fn
+    # For checkpointing, we'll use TrainState
     state = TrainState.create(apply_fn=model.apply, params=params, tx=opt)
-
-    # shard-map wrappers
-    def _spec_for_state(state_template, params_pspec_tree):
-        def _map(path, value):
-            if path and str(path[0]) == "params":
-                return jtu.tree_get(params_pspec_tree, path[1:])
-            elif path and str(path[0]) == "step":
-                return PartitionSpec()
-            return None
-        return jtu.tree_map_with_path(_map, state_template)
-
-    state_pspec = _spec_for_state(state, pspecs)
-    batch_pspec = PartitionSpec(cfg.data_axis, None)
-
-    train_step_sharded = shard_map(
-        partial(_train_step, model=model, data_axis_name=cfg.data_axis),
-        mesh=mesh,
-        in_specs=(state_pspec, batch_pspec, None),
-        out_specs=(state_pspec, None),
-        check_rep=False,
-    )
-
-    eval_step_sharded = shard_map(
-        partial(_eval_step, model=model),
-        mesh=mesh,
-        in_specs=(state_pspec, batch_pspec),
-        out_specs=None,
-        check_rep=False,
-    )
 
     ckpt_mgr = ocp.CheckpointManager(
         cfg.ckpt_dir,
         options=ocp.CheckpointManagerOptions(max_to_keep=1),
     )
 
-    rng_key = jax.random.PRNGKey(42)
     best_eval = float("inf")
 
     for epoch in range(cfg.num_epochs):
@@ -928,9 +911,11 @@ def main(argv):
         train_losses = []
         for step in range(1, steps + 1):
             batch = next(train_it)
-            rng_key, step_rng = jax.random.split(rng_key)
 
-            state, metrics = train_step_sharded(state, batch, step_rng)
+            # Run training step
+            params, opt_state, metrics = train_step(
+                model, params, opt, opt_state, batch
+            )
             train_losses.append(metrics["loss"])
 
             if jax.process_index() == 0:
@@ -941,7 +926,7 @@ def main(argv):
                 eval_losses = []
                 for _ in range(50):
                     eval_batch = next(eval_it)
-                    eval_metrics = eval_step_sharded(state, eval_batch)
+                    eval_metrics = eval_step(model, params, eval_batch)
                     eval_losses.append(eval_metrics["loss"])
 
                 eval_loss = jnp.mean(jnp.array(eval_losses))
@@ -956,6 +941,8 @@ def main(argv):
 
                     if eval_loss < best_eval:
                         best_eval = eval_loss
+                        # Update state for checkpointing
+                        state = state.replace(params=params, opt_state=opt_state, step=step)
                         ckpt_mgr.save(step, args=ocp.args.StandardSave(state))
                         logging.info("Saved best checkpoint")
 
