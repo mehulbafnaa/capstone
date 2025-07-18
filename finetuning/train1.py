@@ -603,7 +603,6 @@ os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 
-import dataclasses # <-- IMPORT THIS
 import flax.core.frozen_dict as frozen_dict
 
 def _safe_repr(self):
@@ -752,12 +751,12 @@ def load_and_shard_model(config, mesh):
         )
 
         # --- THE DEFINITIVE FIX ---
-        # The config object is immutable, so we create a new one with the changed value.
+        # Convert the loaded ConfigDict to a standard dict, modify it,
+        # then create a new GriffinConfig instance from the modified dict.
         logging.info("Overriding scan_type to LINEAR_NATIVE to avoid Pallas bug.")
-        model_cfg = dataclasses.replace(
-            model_cfg_original,
-            scan_type=common.ScanType.LINEAR_NATIVE
-        )
+        config_as_dict = model_cfg_original.to_dict()
+        config_as_dict['scan_type'] = common.ScanType.LINEAR_NATIVE
+        model_cfg = common.GriffinConfig(**config_as_dict)
 
         model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
 
