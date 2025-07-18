@@ -958,10 +958,9 @@ def main(argv):
 
     num_hosts = jax.process_count()
     devices_per_host = jax.local_device_count()
-    devices_array = jax.devices().reshape((num_hosts, devices_per_host))
+    # devices_array = jax.devices().reshape((num_hosts, devices_per_host))
+    devices_array = np.array(jax.devices()).reshape((num_hosts, devices_per_host))
     mesh = Mesh(devices_array, (config.data_axis, config.model_axis))
-
-    mesh = Mesh(jax.devices(), (config.data_axis, config.model_axis))
     
     logging.set_verbosity(logging.INFO)
     if jax.process_index() == 0:
