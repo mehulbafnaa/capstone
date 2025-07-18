@@ -603,6 +603,7 @@ os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 
+import dataclasses # <-- IMPORT THIS
 import flax.core.frozen_dict as frozen_dict
 
 def _safe_repr(self):
@@ -745,15 +746,18 @@ def get_partition_rules():
 def load_and_shard_model(config, mesh):
     with jax.default_device(jax.devices()[0]):
         params_cpu = ocp.PyTreeCheckpointer().restore(config.model_path)
-        model_cfg = rg.GriffinConfig.from_flax_params_or_variables(
+        model_cfg_original = rg.GriffinConfig.from_flax_params_or_variables(
             params_cpu,
             preset=rg.Preset.RECURRENT_GEMMA_2B_V1,
         )
 
         # --- THE DEFINITIVE FIX ---
-        # Override the scan_type to avoid the Pallas bug with shard_map on TPU.
+        # The config object is immutable, so we create a new one with the changed value.
         logging.info("Overriding scan_type to LINEAR_NATIVE to avoid Pallas bug.")
-        model_cfg.scan_type = common.ScanType.LINEAR_NATIVE
+        model_cfg = dataclasses.replace(
+            model_cfg_original,
+            scan_type=common.ScanType.LINEAR_NATIVE
+        )
 
         model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
 
