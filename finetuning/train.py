@@ -556,9 +556,9 @@ def get_config():
 
     # --- Model & Paths ---
     # !!! IMPORTANT: Update these paths to your environment !!!
-    config.model_path = "/path/to/your/recurrentgemma/2b-it"
+    config.model_path = "2b-it/2b-it"
     config.tokenizer_path = os.path.join(config.model_path, "tokenizer.model")
-    config.ckpt_dir = "/path/to/your/checkpoints"
+    config.ckpt_dir = "finetuning_checkpoints"
 
     # --- Training & Optimizer ---
     config.learning_rate = 1e-5
