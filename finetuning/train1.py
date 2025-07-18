@@ -629,6 +629,7 @@ from absl import app, flags, logging
 from functools import partial
 
 import recurrentgemma.jax as rg
+import recurrentgemma.common as common # Import common for ScanType
 import sentencepiece as spm
 from tqdm import tqdm
 
@@ -743,12 +744,17 @@ def get_partition_rules():
 
 def load_and_shard_model(config, mesh):
     with jax.default_device(jax.devices()[0]):
-        # The library now handles config loading from the params directly.
         params_cpu = ocp.PyTreeCheckpointer().restore(config.model_path)
         model_cfg = rg.GriffinConfig.from_flax_params_or_variables(
             params_cpu,
             preset=rg.Preset.RECURRENT_GEMMA_2B_V1,
         )
+
+        # --- THE DEFINITIVE FIX ---
+        # Override the scan_type to avoid the Pallas bug with shard_map on TPU.
+        logging.info("Overriding scan_type to LINEAR_NATIVE to avoid Pallas bug.")
+        model_cfg.scan_type = common.ScanType.LINEAR_NATIVE
+
         model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
 
     try:
@@ -774,8 +780,12 @@ class TrainState(train_state.TrainState):
 
 
 def loss_fn(logits, batch):
+    # Shift labels to the left to predict the next token.
     labels = jnp.roll(batch["inputs"], -1, axis=-1)
+    # Use a mask to avoid calculating loss on padding tokens.
     mask = batch["inputs"] != 0
+    
+    # Standard cross-entropy loss.
     loss = optax.softmax_cross_entropy_with_integer_labels(
         logits.astype(jnp.float32), labels
     )
@@ -783,21 +793,17 @@ def loss_fn(logits, batch):
 
 
 def _train_step(state, batch, model):
-    """A single training step, corrected to use return_cache=False."""
+    """A single training step."""
     def _loss(p):
         batch_size, seq_len = batch["inputs"].shape
         segment_pos = jnp.broadcast_to(jnp.arange(seq_len), (batch_size, seq_len))
 
-        # The model's apply function returns a tuple (outputs, vars).
-        # The model's __call__ function returns a tuple (logits, cache).
-        # By setting return_cache=False, the cache is None.
-        outputs, _ = state.apply_fn(
+        # Model returns a tuple of (logits, cache), we only need logits for training.
+        logits, _ = state.apply_fn(
             {"params": p},
             tokens=batch["inputs"],
             segment_pos=segment_pos,
-            return_cache=False,  # This avoids the library bug with shard_map.
-        )
-        logits, _ = outputs # Unpack the (logits, None) tuple
+        )[0]
 
         return loss_fn(logits, batch)
 
@@ -807,21 +813,16 @@ def _train_step(state, batch, model):
 
 
 def _eval_step(state, batch, model):
-    """A single evaluation step, corrected for consistency."""
+    """A single evaluation step."""
     def _loss(p):
         batch_size, seq_len = batch["inputs"].shape
         segment_pos = jnp.broadcast_to(jnp.arange(seq_len), (batch_size, seq_len))
 
-        # Use return_cache=False for consistency with training and correctness.
-        # The model __call__ does not take a `deterministic` argument.
-        outputs, _ = state.apply_fn(
+        logits, _ = state.apply_fn(
             {"params": p},
             tokens=batch["inputs"],
             segment_pos=segment_pos,
-            return_cache=False,
-        )
-        logits, _ = outputs
-
+        )[0]
         return loss_fn(logits, batch)
 
     loss = _loss(state.params)
@@ -864,7 +865,6 @@ def main(argv):
 
     state = TrainState.create(apply_fn=model.apply, params=params, tx=opt)
 
-    # shard-map wrappers
     def _spec_for_state(state_template, params_pspec_tree):
         def _map(path, value):
             if path and str(path[0]) == "params":
@@ -880,7 +880,7 @@ def main(argv):
     train_step_sharded = shard_map(
         partial(_train_step, model=model),
         mesh=mesh,
-        in_specs=(state_pspec, batch_pspec), # Removed RNG spec
+        in_specs=(state_pspec, batch_pspec),
         out_specs=(state_pspec, None),
         check_rep=False,
     )
@@ -908,7 +908,6 @@ def main(argv):
         train_losses = []
         for step in range(1, steps + 1):
             batch = next(train_it)
-            # No RNG key needed anymore
             state, metrics = train_step_sharded(state, batch)
             train_losses.append(metrics["loss"])
 
