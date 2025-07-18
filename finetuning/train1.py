@@ -486,11 +486,18 @@ def main(argv):
     #     ------------------------------------------------------------------
     # Build an empty, hashable cache
     # ------------------------------------------------------------------
-    with jax.default_device(jax.devices("tpu")[0]):
-        empty_cache = flax.core.freeze(
-            model.init_cache(batch_size=cfg.global_batch_size, dtype=cfg.weight_dtype,
-            )
-        )
+    # with jax.default_device(jax.devices("tpu")[0]):
+    #     empty_cache = flax.core.freeze(
+    #         model.init_cache(batch_size=cfg.global_batch_size, dtype=cfg.weight_dtype,
+    #         )
+    #     )
+
+    empty_cache = flax.core.freeze(
+    model.init_cache(
+        batch_size=cfg.global_batch_size,
+        dtype=cfg.weight_dtype,
+    )
+)
 
 
 #     # ------------------------------------------------------------------
