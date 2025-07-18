@@ -674,7 +674,7 @@ def load_and_shard_model(config, mesh):
         model_config = rg.GriffinConfig.from_preset(rg.Preset.RECURRENT_GEMMA_2B_V1)
         model = rg.Griffin(model_config, dtype=config.weight_dtype)
         # Load parameters from the original checkpoint directory
-        params_cpu = ocp.PyTreeCheckpointer().restore(config.model_path)['params']
+        params_cpu = ocp.PyTreeCheckpointer().restore(config.model_path)
 
     logical_rules = get_partition_rules(config)
     # This utility converts the logical rules into a full PyTree of PartitionSpecs
