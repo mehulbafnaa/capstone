@@ -825,7 +825,7 @@ def main(argv):
         raise app.UsageError("Too many command-line arguments.")
 
     cfg = get_config()
-    cfg.update(FLAGS.config)
+    
 
     jax.distributed.initialize()
     tf.config.set_visible_devices([], "GPU")
