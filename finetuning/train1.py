@@ -842,10 +842,9 @@ def main(argv):
     #     (cfg.data_axis, cfg.model_axis),
     # )
 
-
-    devices = jnp.array(jax.devices())
+    devices = np.array(jax.devices())  # plain NumPy, no jnp
     mesh = Mesh(
-        devices.reshape(jax.process_count(), len(devices) // jax.process_count()),
+        devices.reshape(jax.process_count(), -1),
         (cfg.data_axis, cfg.model_axis),
     )
 
