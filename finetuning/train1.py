@@ -454,7 +454,7 @@ def _train_step(state, batch, rng, model):
     def _loss(p):
 
         batch_size, seq_len = batch["inputs"].shape
-        cache = model.init_cache(batch_size, seq_len, dtype=config.weight_dtype)
+        cache = model.init_cache(batch_size, seq_len, dtype=jnp.bfloat16)
         logits = state.apply_fn(
             {"params": p},
             tokens=batch["inputs"],
@@ -473,7 +473,7 @@ def _train_step(state, batch, rng, model):
 
 def _eval_step(state, batch, model):
     def _loss(p):
-        cache = model.init_cache(batch_size, seq_len, dtype=config.weight_dtype)
+        cache = model.init_cache(batch_size, seq_len, dtype=jnp.bfloat16)
         logits = state.apply_fn(
             {"params": p},
             tokens=batch["inputs"],
