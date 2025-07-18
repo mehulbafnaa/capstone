@@ -894,12 +894,14 @@ def main(argv):
         in_shardings=(state_sharding, None, None),
         out_shardings=(state_sharding, None),
         donate_argnums=(0,),
+        axis_name="data"
     )
 
     p_eval = jax.jit(
         eval_step,
         in_shardings=(state_sharding, None),
         out_shardings=None,
+        axis_name="data"
     )
 
 
