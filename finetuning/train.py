@@ -806,7 +806,7 @@ def loss_fn(logits, batch):
     return jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
 
 
-def train_step(state, batch, rng, axis_name):
+def train_step(state, batch, rng):
     dropout_rng = jax.random.fold_in(rng, state.step)
 
     def loss_and_grad(p):
@@ -828,7 +828,7 @@ def train_step(state, batch, rng, axis_name):
     return new_state, {"loss": loss}
 
 
-def eval_step(state, batch, axis_name):
+def eval_step(state, batch):
     logits = state.apply_fn(
         {"params": state.params},
         tokens=batch["inputs"],
