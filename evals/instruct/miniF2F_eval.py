@@ -32,7 +32,7 @@ import sentencepiece as spm
 from datasets import load_dataset
 from jax.experimental import multihost_utils
 
-REPO_ROOT = Path(__file__).parent.parent.resolve()
+REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
 
 # ------------------------------------------------------------------
 # 2.  Data classes
