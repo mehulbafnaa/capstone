@@ -397,6 +397,7 @@ def load_and_shard_model(config, mesh):
     with mesh:
         params_sharded = jax.device_put(params_cpu, shardings)
     return model, params_sharded, pspec_tree
+    
 
 
 # ------------------------------------------------------------------
@@ -478,6 +479,14 @@ def main(argv):
 
     model, params, pspecs = load_and_shard_model(cfg, mesh)
 
+        # ------------------------------------------------------------------
+    # Build an empty, hashable cache
+    # ------------------------------------------------------------------
+    with jax.default_device(jax.devices()[0]):
+        empty_cache = flax.core.freeze(
+            model.init_cache(batch_size=cfg.global_batch_size)
+        )
+
     opt = optax.MultiSteps(
         optax.chain(
             optax.clip_by_global_norm(cfg.grad_clip_norm),
@@ -502,7 +511,7 @@ def main(argv):
     batch_pspec = PartitionSpec(cfg.data_axis, None)
 
     train_step_sharded = shard_map(
-        partial(_train_step, model=model),
+        partial(_train_step, model=model, empty_cache=empty_cache),
         mesh=mesh,
         in_specs=(state_pspec, batch_pspec, None),
         out_specs=(state_pspec, None),
@@ -510,7 +519,7 @@ def main(argv):
     )
 
     eval_step_sharded = shard_map(
-        partial(_eval_step, model=model),
+        partial(_eval_step, model=model. empty_cache=empty_cache),
         mesh=mesh,
         in_specs=(state_pspec, batch_pspec),
         out_specs=None,
