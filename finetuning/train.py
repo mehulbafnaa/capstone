@@ -821,7 +821,7 @@ def train_step(state, batch, rng):
         return loss_fn(logits, batch)
 
     loss, grads = jax.value_and_grad(loss_and_grad)(state.params)
-    grads = jax.lax.pmean(grads, axis_name=FLAGS.config.data_axis)
+    grads = jax.lax.pmean(grads, axis_name=cfg.data_axis)
     new_state = state.apply_gradients(grads=grads)
     return new_state, {"loss": loss}
 
