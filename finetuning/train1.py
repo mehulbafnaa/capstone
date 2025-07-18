@@ -590,6 +590,8 @@
 #     app.run(main)
 
 
+
+
 #!/usr/bin/env python3
 """
 Fine-tune RecurrentGemma-2B on FrenzyMath/Herald_proofs
@@ -765,16 +767,42 @@ def make_dataset(config, split: str, mesh, batch_size: int):
 # ------------------------------------------------------------------
 # model / sharding utils
 # ------------------------------------------------------------------
-def load_and_shard_model(config, mesh):
-    with jax.default_device(jax.devices()[0]):
-        model_cfg = rg.GriffinConfig.from_preset(rg.Preset.RECURRENT_GEMMA_2B_V1)
-        model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
-        params_cpu = rg.load_parameters(config.model_path, "single_device")
+# def load_and_shard_model(config, mesh):
+#     with jax.default_device(jax.devices()[0]):
+#         model_cfg = rg.GriffinConfig.from_preset(rg.Preset.RECURRENT_GEMMA_2B_V1)
+#         model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
+#         params_cpu = rg.load_parameters(config.model_path, "single_device")
 
-    shardings = jax.tree_util.tree_map(lambda _: NamedSharding(mesh, PartitionSpec()), params_cpu)
+#     shardings = jax.tree_util.tree_map(lambda _: NamedSharding(mesh, PartitionSpec()), params_cpu)
+#     with mesh:
+#         params = jax.device_put(params_cpu, shardings)
+#     return model, params
+
+
+
+def load_and_shard_model(config, mesh):
+    # 1. Build model config
+    model_cfg = rg.GriffinConfig.from_preset(rg.Preset.RECURRENT_GEMMA_2B_V1)
+    model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
+
+    # 2. Load weights on CPU (no device placement)
+    params_cpu = rg.load_parameters(config.model_path, "jax")  # <- HERE
+
+    # 3. Build sharding spec
+    try:
+        from flax.training.common_utils import get_logical_partition_rules
+        pspec_tree = get_logical_partition_rules(params_cpu, get_partition_rules())
+    except ImportError:
+        logging.warning("Using basic sharding – upgrade flax for logical rules")
+        pspec_tree = jax.tree_util.tree_map(lambda _: PartitionSpec(), params_cpu)
+
+    shardings = jax.tree_util.tree_map(lambda ps: NamedSharding(mesh, ps), pspec_tree)
+
+    # 4. Place on the mesh
     with mesh:
-        params = jax.device_put(params_cpu, shardings)
-    return model, params
+        params_sharded = jax.device_put(params_cpu, shardings)
+
+    return model, params_sharded, pspec_tree
 
 
 # ------------------------------------------------------------------
