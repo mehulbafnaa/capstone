@@ -452,12 +452,16 @@ def _train_step(state, batch, rng):
     dropout_rng = jax.random.fold_in(rng, state.step)
 
     def _loss(p):
+
+        batch_size, seq_len = batch["inputs"].shape
+        cache = model.init_cache(batch_size, seq_len)
         logits = state.apply_fn(
             {"params": p},
             tokens=batch["inputs"],
             segment_pos=jnp.broadcast_to(
                 jnp.arange(batch["inputs"].shape[-1]), batch["inputs"].shape
             ),
+            cache=cache,
             rngs={"dropout": dropout_rng},
         )[0]
         return loss_fn(logits, batch)
@@ -469,12 +473,14 @@ def _train_step(state, batch, rng):
 
 def _eval_step(state, batch):
     def _loss(p):
+        cache = model.init_cache(batch_size, seq_len)
         logits = state.apply_fn(
             {"params": p},
             tokens=batch["inputs"],
             segment_pos=jnp.broadcast_to(
                 jnp.arange(batch["inputs"].shape[-1]), batch["inputs"].shape
             ),
+            cache=cache
         )[0]
         return loss_fn(logits, batch)
 
