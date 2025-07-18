@@ -788,8 +788,8 @@ def _train_step(state, batch, rng, model, data_axis_name):
             {"params": p},
             batch["inputs"],
             segment_pos,
-            deterministic=False,
-            rngs={"dropout": dropout_rng},
+            # deterministic=False,
+            # rngs={"dropout": dropout_rng},
         )
         
         # Handle both tuple and single output cases
@@ -815,7 +815,7 @@ def _eval_step(state, batch, model):
             {"params": p},
             batch["inputs"],
             segment_pos,
-            deterministic=True,
+            # deterministic=True,
         )
         
         # Handle both tuple and single output cases
