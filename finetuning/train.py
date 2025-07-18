@@ -276,13 +276,10 @@ import tensorflow_datasets as tfds
 from jax.experimental import multihost_utils
 from jax.experimental.shard_map import shard_map
 
-# New imports needed for the corrected loading pattern
+# Corrected imports for recurrentgemma
 import sentencepiece as spm
-import recurrentgemma as rg
-from recurrentgemma.jax import Griffin as CheckpointedGriffin
+from recurrentgemma import jax as rg
 
-# Remove the old loader, as its logic is now in main
-# from utils.model_loader import load_recurrent_gemma_model 
 from finetuning.data_pipeline import get_dataset
 from finetuning.config import (
     CKPT_DIR,
@@ -379,8 +376,7 @@ def main():
 
     with Mesh(jax.devices(), axis_names=("fsdp",)) as mesh:
 
-        # ------------------- CORRECTED MODEL LOADING PATTERN -------------------
-        # This new pattern avoids premature model initialization.
+        # --- CORRECTED MODEL LOADING PATTERN ---
         
         # 1. Load parameters from checkpoint FIRST
         print(f"Loading parameters from: {CKPT_DIR}")
@@ -395,25 +391,21 @@ def main():
         # 2. Build the model config and instance SECOND
         print(f"Loading tokenizer from: {TOK_FILE}")
         vocab = spm.SentencePieceProcessor(model_file=str(TOK_FILE))
-        preset = rg.jax.Preset.RECURRENT_GEMMA_2B_V1
+        
+        # Use the corrected import path for Preset
+        preset = rg.Preset.RECURRENT_GEMMA_2B_V1
+        
+        # Use the corrected import path for GriffinConfig
         base_cfg = rg.GriffinConfig.from_preset(preset)
-        cfg = base_cfg._replace(vocab_size=vocab.vocab_size()) # Manual override
+        cfg = base_cfg._replace(vocab_size=vocab.vocab_size())
         
-        # Use CheckpointedGriffin if needed, otherwise standard Griffin
-        use_checkpointing = True 
-        if use_checkpointing:
-            print("Using CheckpointedGriffin model for gradient checkpointing.")
-            model_cls = CheckpointedGriffin
-        else:
-            model_cls = rg.Griffin
-        
-        model = model_cls(cfg)
+        # The Griffin class from rg (recurrentgemma.jax) handles checkpointing
+        model = rg.Griffin(cfg)
         
         if jax.process_index() == 0:
             print(f"-----> SANITY CHECK: Model object configured with vocab_size = {model.config.vocab_size} <-----")
-        # -----------------------------------------------------------------------
 
-        # 3) Dataset
+        # 3. Dataset
         ds, n_examples = get_dataset(TRAIN_SPLIT, BATCH_SIZE * jax.process_count())
         ds = tfds.as_numpy(ds)
         steps_per_epoch = (n_examples // (BATCH_SIZE * jax.process_count())) // GRADIENT_ACCUMULATION_STEPS
@@ -421,13 +413,13 @@ def main():
         if jax.process_index() == 0:
             print(f"Total optimizer steps: {total_steps}")
 
-        # 4) Optimizer
+        # 4. Optimizer
         lr = optax.cosine_decay_schedule(
             init_value=LEARNING_RATE, decay_steps=total_steps, alpha=0.1
         )
         opt = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(lr))
 
-        # 5) Create TrainState THIRD, with params and model now correctly defined
+        # 5. Create TrainState THIRD, with params and model now correctly defined
         state_cpu = TrainState.create(
             apply_fn=model.apply,
             params=params,
@@ -436,7 +428,7 @@ def main():
         )
         del params
 
-        # 6) Shard the state for FSDP
+        # 6. Shard the state for FSDP
         sharding_spec = state_cpu.replace(
             step=PartitionSpec(),
             params=safe_fsdp_sharding(state_cpu.params, "fsdp", num_devices),
@@ -448,7 +440,7 @@ def main():
             jtu.tree_map(lambda s: NamedSharding(mesh, s), sharding_spec),
         )
 
-        # 7) Prepare sharded functions
+        # 7. Prepare sharded functions
         data_sharding_spec = PartitionSpec("fsdp", None)
         p_train_step = shard_map(
             _train_step_core,
@@ -464,7 +456,7 @@ def main():
             out_specs=sharding_spec,
         )
 
-        # 8) Training loop
+        # 8. Training loop
         rng = jax.random.PRNGKey(0)
         rng = jax.random.fold_in(rng, jax.process_index())
         ckpt_mgr = ocp.CheckpointManager(CHECKPOINT_DIR, ocp.PyTreeCheckpointer())
@@ -497,7 +489,7 @@ def main():
                 state = p_apply_grads(state)
             jax.block_until_ready(state)
 
-        # 9) Save final checkpoint
+        # 9. Save final checkpoint
         if jax.process_index() == 0:
             ckpt_mgr.save(step=state.step, items=state)
             ckpt_mgr.wait_until_finished()
