@@ -589,6 +589,8 @@
 # if __name__ == "__main__":
 #     app.run(main)
 
+
+
 #!/usr/bin/env python3
 """
 Fine-tune RecurrentGemma-2B on FrenzyMath/Herald_proofs
@@ -623,6 +625,7 @@ from datasets import load_dataset
 from ml_collections import config_flags, ConfigDict
 from absl import app, flags, logging
 from functools import partial
+from jax.experimental.shard_map import shard_map
 
 import recurrentgemma.jax as rg
 import sentencepiece as spm
@@ -766,44 +769,80 @@ class TrainState(train_state.TrainState):
     pass
 
 
+# def forward_and_loss_fn(
+#     params,
+#     model,
+#     input_tokens,
+#     positions,
+# ):
+#     """Forward pass and loss function following RecurrentGemma tutorial pattern."""
+#     batch_size = input_tokens.shape[0]
+    
+#     # Forward pass - no cache needed for training
+#     # Exclude the last token from input as it doesn't appear in targets
+#     logits, _ = model.apply(
+#         {"params": params},
+#         tokens=input_tokens[:, :-1],
+#         segment_pos=positions[:, :-1],
+#         cache=None,
+#     )
+    
+#     # Shift tokens for next-token prediction
+#     targets = input_tokens[:, 1:]
+    
+#     # Calculate loss
+#     logits_flat = logits.reshape(-1, logits.shape[-1])
+#     targets_flat = targets.reshape(-1)
+    
+#     # Create mask for non-padding tokens
+#     mask = targets_flat != 0
+    
+#     # Calculate cross-entropy loss
+#     loss = optax.softmax_cross_entropy_with_integer_labels(
+#         logits_flat.astype(jnp.float32), 
+#         targets_flat
+#     )
+    
+#     # Apply mask and compute mean
+#     loss = jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
+    
+#     return loss
+
+
 def forward_and_loss_fn(
     params,
     model,
     input_tokens,
     positions,
 ):
-    """Forward pass and loss function following RecurrentGemma tutorial pattern."""
-    batch_size = input_tokens.shape[0]
-    
-    # Forward pass - no cache needed for training
-    # Exclude the last token from input as it doesn't appear in targets
-    logits, _ = model.apply(
-        {"params": params},
-        tokens=input_tokens[:, :-1],
-        segment_pos=positions[:, :-1],
-        cache=None,
+    def _forward(tokens, positions):
+        logits, _ = model.apply(
+            {"params": params},
+            tokens=tokens,
+            segment_pos=positions,
+            cache=None,
+        )
+        targets = tokens[:, 1:]
+        logits_flat = logits.reshape(-1, logits.shape[-1])
+        targets_flat = targets.reshape(-1)
+        mask = targets_flat != 0
+        loss = optax.softmax_cross_entropy_with_integer_labels(
+            logits_flat.astype(jnp.float32),
+            targets_flat
+        )
+        loss = jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
+        return loss
+
+    # Shard the forward pass
+    shard_fn = shard_map(
+        _forward,
+        mesh=mesh,
+        in_specs=(PartitionSpec(cfg.data_axis), PartitionSpec(cfg.data_axis)),
+        out_specs=PartitionSpec(),
+        check_rep=False,
     )
-    
-    # Shift tokens for next-token prediction
-    targets = input_tokens[:, 1:]
-    
-    # Calculate loss
-    logits_flat = logits.reshape(-1, logits.shape[-1])
-    targets_flat = targets.reshape(-1)
-    
-    # Create mask for non-padding tokens
-    mask = targets_flat != 0
-    
-    # Calculate cross-entropy loss
-    loss = optax.softmax_cross_entropy_with_integer_labels(
-        logits_flat.astype(jnp.float32), 
-        targets_flat
-    )
-    
-    # Apply mask and compute mean
-    loss = jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
-    
-    return loss
+
+    return shard_fn(input_tokens[:, :-1], positions[:, :-1])
 
 
 @partial(jax.jit, static_argnames=['model', 'optimizer'], donate_argnames=['params', 'opt_state'])
