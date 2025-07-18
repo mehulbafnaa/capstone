@@ -590,7 +590,7 @@ def main(argv):
 
     # Re-create shard_map wrappers
     train_step_sharded = shard_map(
-        partial(_train_step, model=model)
+        partial(_train_step, model=model),
         mesh=mesh,
         in_specs=(state_pspec_full, batch_pspec, None),
         out_specs=(state_pspec_full, None),
@@ -598,7 +598,7 @@ def main(argv):
     )
 
     eval_step_sharded = shard_map(
-        partial(_eval_step, model=model)
+        partial(_eval_step, model=model),
         mesh=mesh,
         in_specs=(state_pspec_full, batch_pspec),
         out_specs=None,
