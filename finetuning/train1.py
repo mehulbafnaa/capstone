@@ -481,7 +481,7 @@ def _eval_step(state, batch, model):
             {"params": p},
             tokens=batch["inputs"],
             segement_pos, 
-            enable_dropout = False
+            enable_dropout = False,
         )[0]
         return loss_fn(logits, batch)
 
