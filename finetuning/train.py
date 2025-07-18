@@ -551,7 +551,7 @@ config_flags.DEFINE_config_file("config", help_string="Path to configuration fil
 
 def _abs_path(p: str) -> str:
    """Return an absolute path, expanding ~ and resolving symlinks."""
-    return os.path.abspath(os.path.expanduser(os.path.expandvars(p)))
+   return os.path.abspath(os.path.expanduser(os.path.expandvars(p)))
 
 # -----------------------------------------------------------------------------
 # 1. Configuration (ml_collections)
