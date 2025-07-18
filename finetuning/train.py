@@ -395,7 +395,7 @@ def main():
         # 2. Build the model config and instance SECOND
         print(f"Loading tokenizer from: {TOK_FILE}")
         vocab = spm.SentencePieceProcessor(model_file=str(TOK_FILE))
-        preset = rg.Preset.RECURRENT_GEMMA_2B_V1
+        preset = rg.jax.Preset.RECURRENT_GEMMA_2B_V1
         base_cfg = rg.GriffinConfig.from_preset(preset)
         cfg = base_cfg._replace(vocab_size=vocab.vocab_size()) # Manual override
         
