@@ -431,7 +431,7 @@ def _train_step(state, batch, rng, model, empty_cache):
             batch["inputs"],
             segment_pos,
             # enable_dropout=True,
-            cache=empty_cache,
+            # cache=empty_cache,
             rngs={"dropout": dropout_rng},
         )[0]
         return loss_fn(logits, batch)
@@ -449,7 +449,7 @@ def _eval_step(state, batch, model, empty_cache):
             {"params": p},
             batch["inputs"],
             segment_pos,
-            cache=empty_cache,
+            # cache=empty_cache,
             # enable_dropout=False,
             deterministic=True,
         )[0]
@@ -501,10 +501,10 @@ def main(argv):
 #     )
 # )
 
-    empty_cache = model.init_cache(
-    batch_size=cfg.global_batch_size,
-    dtype=cfg.weight_dtype,
-)
+#     empty_cache = model.init_cache(
+#     batch_size=cfg.global_batch_size,
+#     dtype=cfg.weight_dtype,
+# )
 
 
 #     # ------------------------------------------------------------------
