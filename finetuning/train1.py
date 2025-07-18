@@ -454,11 +454,14 @@ def _train_step(state, batch, rng, model):
     def _loss(p):
 
         batch_size, _ = batch["inputs"].shape
-        cache = model.init_cache(batch_size, dtype=model.dtype)
+        segment_pos = jnp.broadcast_to(
+            jnp.arange(seq_len), (batch_size, seq_len)
+        )
         logits = state.apply_fn(
             {"params": p},
             tokens=batch["inputs"],
-            rngs={"dropout": dropout_rng},
+            segement_pos,
+            enable_dropout=True,
         )[0]
         return loss_fn(logits, batch)
 
@@ -469,12 +472,16 @@ def _train_step(state, batch, rng, model):
 
 def _eval_step(state, batch, model):
     def _loss(p):
-        batch_size, _ = batch["inputs"].shape
-        cache = model.init_cache(batch_size, dtype=model.dtype)
+
+        batch_size, seq_len = batch["inputs"].shape
+        segment_pos = jnp.broadcast_to(
+            jnp.arange(seq_len), (batch_size, seq_len)
+        )
         logits = state.apply_fn(
             {"params": p},
             tokens=batch["inputs"],
-            rngs={"dropout": dropout_rng},
+            segement_pos, 
+            enable_dropout = False
         )[0]
         return loss_fn(logits, batch)
 
