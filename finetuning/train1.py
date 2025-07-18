@@ -413,7 +413,7 @@ def load_and_shard_model(config, mesh):
         model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
         params_cpu = ocp.PyTreeCheckpointer().restore(config.model_path)
 
-    # build PartitionSpec tree
+    # Build PartitionSpec tree
     try:
         from flax.training.common_utils import get_logical_partition_rules
         pspec_tree = get_logical_partition_rules(params_cpu, get_partition_rules())
@@ -421,10 +421,14 @@ def load_and_shard_model(config, mesh):
         logging.warning("Using basic sharding – upgrade flax for logical rules")
         pspec_tree = jtu.tree_map(lambda _: PartitionSpec(), params_cpu)
 
-    # create NamedSharding tree
-    shardings = jtu.tree_map(lambda p: p, pspec_tree)  # already PartitionSpec
+    # Build NamedSharding tree
+    from jax.sharding import NamedSharding
+    shardings = jtu.tree_map(lambda ps: NamedSharding(mesh, ps), pspec_tree)
+
+    # Materialise on devices
     with mesh:
-        params_sharded = jax.device_put(params_cpu, jtu.tree_map(lambda p: p, pspec_tree))
+        params_sharded = jax.device_put(params_cpu, shardings)
+
     return model, params_sharded, pspec_tree
 
 
