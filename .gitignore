@@ -14,6 +14,7 @@ tokenizer.model
 model.tar.gz 
 
 2b/
+2b-it/
 
 herald_proofs_data/
 
@@ -25,21 +26,4 @@ reference.py
 
 finetuning_checkpoints/
 
-.DS_Store
-.config/
-_create_ond.sh
-_create_tpu_preempt.sh
-_describe_tpu.sh
-_download_model.sh
-delete_tpu_instance.sh
-demo/
-kaggle.json
-multi_host.sh
-request_tpu.sh
-ssh.sh
-~model.tar.gz
-
-
-herald_inference_results_corrected.json
-
-herald_inference_results_corrected.json
+*model.tar.gz
