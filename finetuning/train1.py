@@ -238,12 +238,9 @@
 #     main()
 
 
-
-
 #!/usr/bin/env python3
 """
 Fine-tune RecurrentGemma-2B on FrenzyMath/Herald_proofs
-(Lean 4) with a configurable subset.
 """
 
 import os
@@ -254,7 +251,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import numpy as np
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, PartitionSpec
+from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.shard_map import shard_map
 import jax.tree_util as jtu
 from jax.experimental import multihost_utils
@@ -275,19 +272,12 @@ from tqdm import tqdm
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", help_string="Path to configuration file.")
 
+
 # ------------------------------------------------------------------
 # helpers
 # ------------------------------------------------------------------
 def _abs_path(p: str) -> str:
     return os.path.abspath(os.path.expanduser(os.path.expandvars(p)))
-
-
-def _make_state_sharding(state, params_shardings):
-    def _map(path, value):
-        if path and path[0] == "params":
-            return jtu.tree_get(params_shardings, path[1:])
-        return None
-    return jtu.tree_map_with_path(_map, state)
 
 
 # ------------------------------------------------------------------
@@ -329,7 +319,6 @@ def create_dataset_iterator(config, split, mesh, batch_size):
     def gen():
         ds = load_dataset(config.dataset_name, split=split, streaming=True)
         ds = ds.shuffle(seed=42, buffer_size=2_000)
-
         required = {"informal_theorem", "formal_theorem", "formal_proof"}
         limit = max(1, int(100_000 * config.dataset_fraction))
 
@@ -373,7 +362,7 @@ def create_dataset_iterator(config, split, mesh, batch_size):
 
 
 # ------------------------------------------------------------------
-# model / sharding
+# model
 # ------------------------------------------------------------------
 def get_partition_rules():
     return (
@@ -389,33 +378,12 @@ def get_partition_rules():
     )
 
 
-# def load_and_shard_model(config, mesh):
-#     with jax.default_device(jax.devices()[0]):
-#         model_cfg = rg.GriffinConfig.from_preset(rg.Preset.RECURRENT_GEMMA_2B_V1)
-#         model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
-#         params_cpu = ocp.PyTreeCheckpointer().restore(config.model_path)
-
-#     try:
-#         from flax.training.common_utils import get_logical_partition_rules
-#         pspec_tree = get_logical_partition_rules(params_cpu, get_partition_rules())
-#     except ImportError:
-#         logging.warning("Using basic sharding – upgrade flax for logical rules")
-#         pspec_tree = jtu.tree_map(lambda _: PartitionSpec(), params_cpu)
-
-#     shardings = jtu.tree_map(lambda p: p.spec, jtu.tree_map(lambda p: mesh, pspec_tree))
-#     with mesh:
-#         params_sharded = jax.device_put(params_cpu, jtu.tree_map(lambda p: mesh, pspec_tree))
-#     return model, params_sharded, shardings
-
-
-
 def load_and_shard_model(config, mesh):
     with jax.default_device(jax.devices()[0]):
         model_cfg = rg.GriffinConfig.from_preset(rg.Preset.RECURRENT_GEMMA_2B_V1)
         model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
         params_cpu = ocp.PyTreeCheckpointer().restore(config.model_path)
 
-    # Build PartitionSpec tree
     try:
         from flax.training.common_utils import get_logical_partition_rules
         pspec_tree = get_logical_partition_rules(params_cpu, get_partition_rules())
@@ -423,19 +391,16 @@ def load_and_shard_model(config, mesh):
         logging.warning("Using basic sharding – upgrade flax for logical rules")
         pspec_tree = jtu.tree_map(lambda _: PartitionSpec(), params_cpu)
 
-    # Build NamedSharding tree
-    from jax.sharding import NamedSharding
-    shardings = jtu.tree_map(lambda ps: NamedSharding(mesh, ps), pspec_tree)
-
-    # Materialise on devices
+    shardings = jtu.tree_map(
+        lambda ps: NamedSharding(mesh, ps), pspec_tree
+    )
     with mesh:
         params_sharded = jax.device_put(params_cpu, shardings)
-
     return model, params_sharded, pspec_tree
 
 
 # ------------------------------------------------------------------
-# loss + training step
+# loss / step
 # ------------------------------------------------------------------
 class TrainState(train_state.TrainState):
     pass
@@ -454,14 +419,11 @@ def _train_step(state, batch, rng, model):
     dropout_rng = jax.random.fold_in(rng, state.step)
 
     def _loss(p):
-
         batch_size, seq_len = batch["inputs"].shape
-        segment_pos = jnp.broadcast_to(
-            jnp.arange(seq_len), (batch_size, seq_len)
-        )
+        segment_pos = jnp.broadcast_to(jnp.arange(seq_len), (batch_size, seq_len))
         logits = state.apply_fn(
             {"params": p},
-            tokens=batch["inputs"],
+            batch["inputs"],
             segment_pos,
             enable_dropout=True,
         )[0]
@@ -474,16 +436,13 @@ def _train_step(state, batch, rng, model):
 
 def _eval_step(state, batch, model):
     def _loss(p):
-
         batch_size, seq_len = batch["inputs"].shape
-        segment_pos = jnp.broadcast_to(
-            jnp.arange(seq_len), (batch_size, seq_len)
-        )
+        segment_pos = jnp.broadcast_to(jnp.arange(seq_len), (batch_size, seq_len))
         logits = state.apply_fn(
             {"params": p},
-            tokens=batch["inputs"],
-            segment_pos, 
-            enable_dropout = False,
+            batch["inputs"],
+            segment_pos,
+            enable_dropout=False,
         )[0]
         return loss_fn(logits, batch)
 
@@ -515,7 +474,7 @@ def main(argv):
     train_it = create_dataset_iterator(cfg, cfg.train_split, mesh, cfg.global_batch_size)
     eval_it = create_dataset_iterator(cfg, cfg.eval_split, mesh, cfg.eval_batch_size)
 
-    model, params, shardings = load_and_shard_model(cfg, mesh)
+    model, params, pspecs = load_and_shard_model(cfg, mesh)
 
     opt = optax.MultiSteps(
         optax.chain(
@@ -526,86 +485,39 @@ def main(argv):
     )
 
     state = TrainState.create(apply_fn=model.apply, params=params, tx=opt)
-    del params
 
-    ckpt_mgr = ocp.CheckpointManager(
-        cfg.ckpt_dir,
-        options=ocp.CheckpointManagerOptions(max_to_keep=1),
-    )
-
-    # # convert NamedSharding → PartitionSpec tree for shard_map
-    # def pspec(x):
-    #     return x.spec if hasattr(x, "spec") else PartitionSpec()
-
-    # state_pspec = jtu.tree_map(pspec, shardings)
-    # batch_pspec = PartitionSpec(cfg.data_axis, None)
-
-    # # shard_map wrappers
-    # train_step_sharded = shard_map(
-    #     _train_step,
-    #     mesh=mesh,
-    #     in_specs=(state_pspec, batch_pspec, None),
-    #     out_specs=(state_pspec, None),
-    #     check_rep=False,
-    # )
-
-    # eval_step_sharded = shard_map(
-    #     _eval_step,
-    #     mesh=mesh,
-    #     in_specs=(state_pspec, batch_pspec),
-    #     out_specs=None,
-    #     check_rep=False,
-    # )
-
-
-
-        # ------------------------------------------------------------------
-    # Build a pytree of PartitionSpecs that matches TrainState structure
-    # ------------------------------------------------------------------
-    from flax import struct
-
-    # ------------------------------------------------------------------
-# Build a pytree of PartitionSpecs that mirrors TrainState structure
-# ------------------------------------------------------------------
+    # shard-map wrappers
     def _spec_for_state(state_template, params_pspec_tree):
-        """
-        Return a pytree with the same structure as `state_template`
-        but whose leaves are PartitionSpec / None, ready for shard_map.
-        """
         def _map(path, value):
-            # path is a tuple of key objects (int, str, or GetAttrKey)
             if path and str(path[0]) == "params":
-                # descend into params subtree
                 return jtu.tree_get(params_pspec_tree, path[1:])
             elif path and str(path[0]) == "step":
-                return PartitionSpec()          # scalar, replicated
-            else:
-                return None                     # non-array fields (apply_fn, tx, opt_state)
+                return PartitionSpec()
+            return None
         return jtu.tree_map_with_path(_map, state_template)
 
-    # Build the pspec tree for the entire state object
-    state_pspec_full = _spec_for_state(
-        state,  # real TrainState instance you already created
-        jtu.tree_map(lambda x: x.spec if hasattr(x, "spec") else x, shardings)
-    )
-
+    state_pspec = _spec_for_state(state, pspecs)
     batch_pspec = PartitionSpec(cfg.data_axis, None)
 
-    # Re-create shard_map wrappers
     train_step_sharded = shard_map(
         partial(_train_step, model=model),
         mesh=mesh,
-        in_specs=(state_pspec_full, batch_pspec, None),
-        out_specs=(state_pspec_full, None),
+        in_specs=(state_pspec, batch_pspec, None),
+        out_specs=(state_pspec, None),
         check_rep=False,
     )
 
     eval_step_sharded = shard_map(
         partial(_eval_step, model=model),
         mesh=mesh,
-        in_specs=(state_pspec_full, batch_pspec),
+        in_specs=(state_pspec, batch_pspec),
         out_specs=None,
         check_rep=False,
+    )
+
+    ckpt_mgr = ocp.CheckpointManager(
+        cfg.ckpt_dir,
+        options=ocp.CheckpointManagerOptions(max_to_keep=1),
     )
 
     rng_key = jax.random.PRNGKey(42)
