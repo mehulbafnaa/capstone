@@ -555,24 +555,24 @@ def main(argv):
     # ------------------------------------------------------------------
     from flax import struct
 
+    # ------------------------------------------------------------------
+# Build a pytree of PartitionSpecs that mirrors TrainState structure
+# ------------------------------------------------------------------
     def _spec_for_state(state_template, params_pspec_tree):
         """
-        Return a dict that has the same keys as TrainState but whose
-        leaves are PartitionSpec / None, ready to be used in shard_map.
+        Return a pytree with the same structure as `state_template`
+        but whose leaves are PartitionSpec / None, ready for shard_map.
         """
-        flat, treedef = jtu.tree_flatten_with_path(state_template)
-        spec_flat = []
-        for kp, val in flat:
-            key = kp[0].key if kp else None
-            if key == "params":
-                spec_flat.append(jtu.tree_get(params_pspec_tree, kp[1:]))
-            elif key in ("step", "opt_state"):
-                # scalar or opaque → replicated
-                spec_flat.append(PartitionSpec())
+        def _map(path, value):
+            # path is a tuple of key objects (int, str, or GetAttrKey)
+            if path and str(path[0]) == "params":
+                # descend into params subtree
+                return jtu.tree_get(params_pspec_tree, path[1:])
+            elif path and str(path[0]) == "step":
+                return PartitionSpec()          # scalar, replicated
             else:
-                # apply_fn, tx  etc.  (non-arrays) → None
-                spec_flat.append(None)
-        return jtu.tree_unflatten(treedef, spec_flat)
+                return None                     # non-array fields (apply_fn, tx, opt_state)
+        return jtu.tree_map_with_path(_map, state_template)
 
     # Build the pspec tree for the entire state object
     state_pspec_full = _spec_for_state(
