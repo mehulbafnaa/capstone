@@ -603,7 +603,6 @@ os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 
-import dataclasses
 import flax.core.frozen_dict as frozen_dict
 
 def _safe_repr(self):
@@ -745,21 +744,23 @@ def get_partition_rules():
 
 def load_and_shard_model(config, mesh):
     with jax.default_device(jax.devices()[0]):
-        params_cpu = ocp.PyTreeCheckpointer().restore(config.model_path)
-        model_cfg_original = rg.GriffinConfig.from_flax_params_or_variables(
-            params_cpu,
-            preset=rg.Preset.RECURRENT_GEMMA_2B_V1,
-        )
-
         # --- THE DEFINITIVE FIX ---
-        # Use dataclasses.asdict() to convert the dataclass to a dict, modify it,
-        # then create a new GriffinConfig instance from the modified dict.
-        logging.info("Overriding scan_type to LINEAR_NATIVE to avoid Pallas bug.")
-        config_as_dict = dataclasses.asdict(model_cfg_original)
-        config_as_dict['scan_type'] = common.ScanType.LINEAR_NATIVE
-        model_cfg = common.GriffinConfig(**config_as_dict)
+        # 1. Bypass the problematic `from_flax_params_or_variables` method.
+        # 2. Start from the base preset, which returns a mutable ConfigDict.
+        model_cfg = rg.GriffinConfig.from_preset(rg.Preset.RECURRENT_GEMMA_2B_V1)
 
+        # 3. Manually update the config with the correct vocab_size and scan_type.
+        tokenizer = spm.SentencePieceProcessor(model_file=config.tokenizer_path)
+        model_cfg.vocab_size = tokenizer.vocab_size()
+        
+        logging.info("Overriding scan_type to LINEAR_NATIVE to avoid Pallas bug.")
+        model_cfg.scan_type = common.ScanType.LINEAR_NATIVE
+
+        # 4. Now create the model with the corrected config.
         model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
+        
+        # 5. Load the parameters separately.
+        params_cpu = ocp.PyTreeCheckpointer().restore(config.model_path)
 
     try:
         from flax.training.common_utils import get_logical_partition_rules
