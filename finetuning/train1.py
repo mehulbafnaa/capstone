@@ -431,7 +431,7 @@ def _train_step(state, batch, rng, model):
             batch["inputs"],
             segment_pos,
             # enable_dropout=True,
-            cache=empty_cache
+            cache=empty_cache,
             rngs={"dropout": dropout_rng},
         )[0]
         return loss_fn(logits, batch)
