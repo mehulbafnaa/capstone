@@ -628,6 +628,7 @@ from jax.tree_util import tree_map_with_path
 
 from ml_collections import config_flags, ConfigDict
 from absl import app, flags, logging
+from functools import partial
 
 import recurrentgemma.jax as rg
 import sentencepiece as spm
@@ -805,7 +806,7 @@ def loss_fn(logits, batch):
     return jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
 
 
-def train_step(state, batch, rng):
+def train_step(state, batch, rng, axis_name):
     dropout_rng = jax.random.fold_in(rng, state.step)
 
     def loss_and_grad(p):
@@ -821,12 +822,12 @@ def train_step(state, batch, rng):
         return loss_fn(logits, batch)
 
     loss, grads = jax.value_and_grad(loss_and_grad)(state.params)
-    grads = jax.lax.pmean(grads, axis_name=cfg.data_axis)
+    grads = jax.lax.pmean(grads, axis_name=axis_name)
     new_state = state.apply_gradients(grads=grads)
     return new_state, {"loss": loss}
 
 
-def eval_step(state, batch):
+def eval_step(state, batch, axis_name):
     logits = state.apply_fn(
         {"params": state.params},
         tokens=batch["inputs"],
@@ -887,14 +888,14 @@ def main(argv):
     state_sharding = _make_state_sharding(state, shardings)
 
     p_train = jax.jit(
-        train_step,
+        partial(train_step, axis_name=cfg.data_axis),
         in_shardings=(state_sharding, None, None),
         out_shardings=(state_sharding, None),
         donate_argnums=(0,),
     )
 
     p_eval = jax.jit(
-        eval_step,
+        partial(eval_step, axis_name=cfg.data_axis),
         in_shardings=(state_sharding, None),
         out_shardings=None,
     )
