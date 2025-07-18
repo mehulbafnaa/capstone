@@ -460,7 +460,7 @@ def _train_step(state, batch, rng, model):
         logits = state.apply_fn(
             {"params": p},
             tokens=batch["inputs"],
-            segement_pos,
+            segment_pos,
             enable_dropout=True,
         )[0]
         return loss_fn(logits, batch)
@@ -480,7 +480,7 @@ def _eval_step(state, batch, model):
         logits = state.apply_fn(
             {"params": p},
             tokens=batch["inputs"],
-            segement_pos, 
+            segment_pos, 
             enable_dropout = False,
         )[0]
         return loss_fn(logits, batch)
