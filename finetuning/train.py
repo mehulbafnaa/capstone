@@ -665,8 +665,8 @@ def load_and_shard_model(config, mesh):
     """Loads model on CPU, defines sharding, and shards onto devices."""
     with jax.default_device(jax.devices()[0]):
         scan_fn = partial(remat) if config.use_remat else None
-        model_config = rg.GriffinConfig.from_preset(rg.Preset.RECURRENT_GEMMA_2B_V1, scan_fn=scan_fn)
-        model = rg.Griffin(model_config, dtype=config.weight_dtype)
+        model_config = rg.GriffinConfig.from_preset(rg.Preset.RECURRENT_GEMMA_2B_V1)
+        model = rg.Griffin(model_config, dtype=config.weight_dtype, scan_fn=scan_fn)
         # Load parameters from the original checkpoint directory
         params_cpu = ocp.PyTreeCheckpointer().restore(config.model_path)['params']
 
