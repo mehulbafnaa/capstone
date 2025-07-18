@@ -463,8 +463,6 @@ def train_step(state, batch, rng):
         return loss_fn(logits, batch)
 
     loss, grads = jax.value_and_grad(loss_and_grad)(state.params)
-    # Use lax.pmean to average gradients across devices
-    grads = jax.lax.pmean(grads, axis_name="data")
     new_state = state.apply_gradients(grads=grads)
     return new_state, {"loss": loss}
 
@@ -527,27 +525,26 @@ def main(argv):
 
     state_sharding = _make_state_sharding(state, shardings)
 
-    # Fixed pjit calls - removed axis_resources parameter and used pmap instead for pmean
-    def p_train_fn(state, batch, rng):
-        return train_step(state, batch, rng)
-
-    def p_eval_fn(state, batch):
-        return eval_step(state, batch)
-
-    # Use pmap for multi-device training to enable pmean
-    p_train = jax.pmap(
-        p_train_fn,
-        axis_name="data",
+    # Use pjit for distributed training with proper sharding
+    @partial(
+        pjit,
+        in_shardings=(state_sharding, PartitionSpec(cfg.data_axis), None),
+        out_shardings=(state_sharding, None),
         donate_argnums=(0,)
     )
+    def p_train_step(state, batch, rng):
+        return train_step(state, batch, rng)
 
-    p_eval = jax.pmap(
-        p_eval_fn,
-        axis_name="data"
+    @partial(
+        pjit,
+        in_shardings=(state_sharding, PartitionSpec(cfg.data_axis)),
+        out_shardings=None
     )
+    def p_eval_step(state, batch):
+        return eval_step(state, batch)
 
-    # Replicate state across devices for pmap
-    state = jax.device_put_replicated(state, jax.local_devices())
+    # Create a single RNG key for the training
+    rng_key = jax.random.PRNGKey(42)
 
     best_eval = float("inf")
     for epoch in range(cfg.num_epochs):
@@ -558,43 +555,32 @@ def main(argv):
         train_losses = []
         for step in range(1, steps + 1):
             batch = next(train_it)
-            # Reshape batch for pmap
-            batch_shape = batch["inputs"].shape
-            batch["inputs"] = batch["inputs"].reshape(
-                jax.local_device_count(), -1, *batch_shape[1:]
-            )
             
-            rng = jax.random.split(
-                jax.random.PRNGKey(epoch * 1_000_000 + step), 
-                jax.local_device_count()
-            )
+            # Split RNG for this step
+            rng_key, step_rng = jax.random.split(rng_key)
             
-            state, m = p_train(state, batch, rng)
-            train_losses.append(m["loss"].mean())
+            state, metrics = p_train_step(state, batch, step_rng)
+            train_losses.append(metrics["loss"])
 
             if jax.process_index() == 0:
                 pbar.update(1)
 
             if step % cfg.eval_steps == 0:
+                # Synchronize across hosts for evaluation
                 multihost_utils.sync_global_devices("eval")
+                
                 eval_losses = []
                 for _ in range(50):
                     eval_batch = next(eval_it)
-                    eval_batch_shape = eval_batch["inputs"].shape
-                    eval_batch["inputs"] = eval_batch["inputs"].reshape(
-                        jax.local_device_count(), -1, *eval_batch_shape[1:]
-                    )
-                    eval_loss = p_eval(state, eval_batch)["loss"].mean()
-                    eval_losses.append(eval_loss)
+                    eval_metrics = p_eval_step(state, eval_batch)
+                    eval_losses.append(eval_metrics["loss"])
                 
+                # Average evaluation losses
                 eval_loss = jnp.mean(jnp.array(eval_losses))
-                eval_loss = multihost_utils.process_allgather(eval_loss).mean()
-
                 avg_train = jnp.mean(jnp.array(train_losses))
-                avg_train = multihost_utils.process_allgather(avg_train).mean()
                 
                 if jax.process_index() == 0:
-                    pbar.set_postfix(train=avg_train, eval=eval_loss)
+                    pbar.set_postfix(train=float(avg_train), eval=float(eval_loss))
                     logging.info(
                         f"Step {step}: train={avg_train:.4f} eval={eval_loss:.4f}"
                     )
@@ -602,11 +588,9 @@ def main(argv):
 
                     if eval_loss < best_eval:
                         best_eval = eval_loss
-                        # Take first replica for checkpointing
-                        checkpoint_state = jax.tree_map(lambda x: x[0], state)
                         ckpt_mgr.save(
                             step,
-                            args=ocp.args.StandardSave(checkpoint_state),
+                            args=ocp.args.StandardSave(state),
                         )
                         logging.info("Saved best checkpoint")
 
