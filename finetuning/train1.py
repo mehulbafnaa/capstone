@@ -501,7 +501,7 @@ def main(argv):
                     dtype=cfg.weight_dtype,
                 )
             ),
-            device=jax.devices("cpu")[0],   # build on CPU
+            device=jax.devices("tpu")[0],   # build on CPU
         )()
 
     opt = optax.MultiSteps(
