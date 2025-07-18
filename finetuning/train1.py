@@ -470,7 +470,7 @@ def loss_fn(logits, batch):
 
 from jax.experimental.shard_map import shard_map
 
-def train_step(state, batch, rng):
+def train_step(state, batch, rng, mesh):
     dropout_rng = jax.random.fold_in(rng, state.step)
 
     def loss_and_grad(p):
@@ -511,7 +511,7 @@ def train_step(state, batch, rng):
 #     return {"loss": loss_fn(logits, batch)}
 
 
-def eval_step(state, batch):
+def eval_step(state, batch, mesh):
     def forward(p):
         logits = state.apply_fn(
             {"params": p},
@@ -590,16 +590,16 @@ def main(argv):
         out_shardings=(state_sharding, None),
         donate_argnums=(0,)
     )
-    def p_train_step(state, batch, rng):
-        return train_step(state, batch, rng)
+    def p_train_step(state, batch, rng, mesh):
+        return train_step(state, batch, rng, mesh)
 
     @partial(
         pjit,
         in_shardings=(state_sharding, batch_sharding),
         out_shardings=None
     )
-    def p_eval_step(state, batch):
-        return eval_step(state, batch)
+    def p_eval_step(state, batch, mesh):
+        return eval_step(state, batch, mesh)
 
     # Create a single RNG key for the training
     rng_key = jax.random.PRNGKey(42)
@@ -617,7 +617,7 @@ def main(argv):
                 # Split RNG for this step
                 rng_key, step_rng = jax.random.split(rng_key)
                 
-                state, metrics = p_train_step(state, batch, step_rng)
+                state, metrics = p_train_step(state, batch, step_rng, mesh)
                 train_losses.append(metrics["loss"])
 
                 if jax.process_index() == 0:
@@ -630,7 +630,7 @@ def main(argv):
                     eval_losses = []
                     for _ in range(50):
                         eval_batch = next(eval_it)
-                        eval_metrics = p_eval_step(state, eval_batch)
+                        eval_metrics = p_eval_step(state, eval_batch, mesh)
                         eval_losses.append(eval_metrics["loss"])
                     
                     # Average evaluation losses
