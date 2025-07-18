@@ -590,6 +590,7 @@
 #     app.run(main)
 
 
+
 #!/usr/bin/env python3
 """
 Fine-tune RecurrentGemma-2B on FrenzyMath/Herald_proofs
@@ -781,7 +782,6 @@ def _train_step(state, batch, _, model, data_axis_name):
             batch["inputs"],
             segment_pos,
             rngs={"dropout": dropout_rng},
-            deterministic=False,
             mutable=False,
         )[0]
         return loss_fn(logits, batch)
@@ -798,7 +798,6 @@ def _eval_step(state, batch, model):
             {"params": p},
             batch["inputs"],
             segment_pos,
-            deterministic=True,
             mutable=False,
         )[0]
         return loss_fn(logits, batch)
