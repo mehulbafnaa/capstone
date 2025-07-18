@@ -524,26 +524,59 @@ def main(argv):
         options=ocp.CheckpointManagerOptions(max_to_keep=1),
     )
 
-    # convert NamedSharding → PartitionSpec tree for shard_map
-    def pspec(x):
-        return x.spec if hasattr(x, "spec") else PartitionSpec()
+    # # convert NamedSharding → PartitionSpec tree for shard_map
+    # def pspec(x):
+    #     return x.spec if hasattr(x, "spec") else PartitionSpec()
 
-    state_pspec = jtu.tree_map(pspec, shardings)
-    batch_pspec = PartitionSpec(cfg.data_axis, None)
+    # state_pspec = jtu.tree_map(pspec, shardings)
+    # batch_pspec = PartitionSpec(cfg.data_axis, None)
 
-    # shard_map wrappers
+    # # shard_map wrappers
+    # train_step_sharded = shard_map(
+    #     _train_step,
+    #     mesh=mesh,
+    #     in_specs=(state_pspec, batch_pspec, None),
+    #     out_specs=(state_pspec, None),
+    #     check_rep=False,
+    # )
+
+    # eval_step_sharded = shard_map(
+    #     _eval_step,
+    #     mesh=mesh,
+    #     in_specs=(state_pspec, batch_pspec),
+    #     out_specs=None,
+    #     check_rep=False,
+    # )
+
+
+
+        # 1. Build a PartitionSpec tree that mirrors the full TrainState
+    def _train_state_pspec(params_pspec_tree):
+        return TrainState(
+            step=PartitionSpec(),                        # scalar, replicated
+            apply_fn=None,                               # not a leaf → None
+            tx=None,                                     # not a leaf → None
+            opt_state=None,                              # None → will be inferred by tx
+            params=params_pspec_tree,                    # the tree you already built
+        )
+
+    state_pspec_full = _train_state_pspec(
+        jtu.tree_map(lambda x: x.spec if hasattr(x, "spec") else x, shardings)
+    )
+
+    # 2. Re-create the shard_map wrappers with the correct spec
     train_step_sharded = shard_map(
         _train_step,
         mesh=mesh,
-        in_specs=(state_pspec, batch_pspec, None),
-        out_specs=(state_pspec, None),
+        in_specs=(state_pspec_full, PartitionSpec(cfg.data_axis, None), None),
+        out_specs=(state_pspec_full, None),
         check_rep=False,
     )
 
     eval_step_sharded = shard_map(
         _eval_step,
         mesh=mesh,
-        in_specs=(state_pspec, batch_pspec),
+        in_specs=(state_pspec_full, PartitionSpec(cfg.data_axis, None)),
         out_specs=None,
         check_rep=False,
     )
