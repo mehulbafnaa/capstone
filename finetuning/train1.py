@@ -439,7 +439,7 @@ def _train_step(state, batch, rng, model, data_axis_name):
             {"params": p},
             batch["inputs"],
             segment_pos,
-            rngs={"dropout": dropout_rng},  # <-- The fix
+            # rngs={"dropout": dropout_rng},  # <-- The fix
         )[0]
         return loss_fn(logits, batch)
 
