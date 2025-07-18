@@ -862,17 +862,40 @@ def main(argv):
         options=ocp.CheckpointManagerOptions(max_to_keep=1),
     )
 
+
+        # Build a TrainState-shaped sharding tree
+    state_sharding = TrainState(
+        step=None,                       # scalars are replicated
+        apply_fn=state.apply_fn,         # functions are not sharded
+        params=shardings,                # this is the dict we already built
+        tx=state.tx,                     # optax state is replicated
+        opt_state=state.opt_state        # optax state is replicated
+    )
+
     p_train = jax.jit(
         train_step,
-        in_shardings=(shardings, None, None),
-        out_shardings=(shardings, None),
+        in_shardings=(state_sharding, None, None),
+        out_shardings=(state_sharding, None),
         donate_argnums=(0,),
     )
+
     p_eval = jax.jit(
         eval_step,
-        in_shardings=(shardings, None),
+        in_shardings=(state_sharding, None),
         out_shardings=None,
-    )
+)
+
+    # p_train = jax.jit(
+    #     train_step,
+    #     in_shardings=(shardings, None, None),
+    #     out_shardings=(shardings, None),
+    #     donate_argnums=(0,),
+    # )
+    # p_eval = jax.jit(
+    #     eval_step,
+    #     in_shardings=(shardings, None),
+    #     out_shardings=None,
+    # )
 
     best_eval = float("inf")
     for epoch in range(cfg.num_epochs):
