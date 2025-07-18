@@ -574,7 +574,7 @@ def main():
     mesh = Mesh(jax.devices(), axis_names=("fsdp",))
 
     model, _, params, _ = load_recurrent_gemma_model(
-        CKPT_DIR, TOK_FILE, params_dtype=WEIGHT_DTYPE, use_checkpointing=False, preset="2b"
+        CKPT_DIR, TOK_FILE, params_dtype=WEIGHT_DTYPE, use_checkpointing=False
     )
 
     ds, n_examples = get_dataset(TRAIN_SPLIT, BATCH_SIZE * jax.process_count())
