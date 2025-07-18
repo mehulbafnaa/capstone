@@ -593,10 +593,7 @@
 #!/usr/bin/env python3
 """
 Fine-tune RecurrentGemma-2B on FrenzyMath/Herald_proofs
-Fixed for:
-  - InvalidRngError (sharded RNG leaking into Flax)
-  - AssertionError inside FrozenDict.__repr__
-  - TypeError: unhashable type: 'dict' from Pallas kernel
+– single-device logic ported to multi-host TPU mesh
 """
 
 import os
@@ -604,24 +601,22 @@ os.environ["JAX_PLATFORMS"] = "tpu"
 os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
-import numpy as np
-import flax.core
+import functools
+from typing import Any, Mapping
+
+import chex
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, PartitionSpec, NamedSharding
-from jax.experimental.shard_map import shard_map
-import jax.tree_util as jtu
-from jax.experimental import multihost_utils
-
 import optax
 import orbax.checkpoint as ocp
-from flax.training import train_state
 import tensorflow as tf
-from datasets import load_dataset
-from ml_collections import config_flags, ConfigDict
 from absl import app, flags, logging
-from functools import partial
-
+from flax.training import train_state
+from jax.experimental import multihost_utils
+from jax.experimental.shard_map import shard_map
+from jax.sharding import Mesh, PartitionSpec, NamedSharding
+from ml_collections import config_flags, ConfigDict
+from datasets import load_dataset
 import recurrentgemma.jax as rg
 import sentencepiece as spm
 from tqdm import tqdm
@@ -629,22 +624,17 @@ from tqdm import tqdm
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", help_string="Path to configuration file.")
 
-# ------------------------------------------------------------------
-# helpers
-# ------------------------------------------------------------------
-def _abs_path(p: str) -> str:
-    return os.path.abspath(os.path.expanduser(os.path.expandvars(p)))
 
 # ------------------------------------------------------------------
-# default config
+# config
 # ------------------------------------------------------------------
 def get_config():
     c = ConfigDict()
-    c.model_path = _abs_path("2b-it/2b-it")
-    c.tokenizer_path = _abs_path("2b-it/tokenizer.model")
-    c.ckpt_dir = _abs_path("finetuning_checkpoints")
+    c.model_path = "2b-it/2b-it"          # adapt if needed
+    c.tokenizer_path = "2b-it/tokenizer.model"
+    c.ckpt_dir = "finetuning_checkpoints"
 
-    c.learning_rate = 1e-5
+    c.learning_rate = 1e-4
     c.num_epochs = 3
     c.global_batch_size = 32
     c.grad_clip_norm = 1.0
@@ -663,11 +653,33 @@ def get_config():
     c.model_axis = "model"
     return c
 
+
 # ------------------------------------------------------------------
-# dataset
+# data pipeline (re-uses Colab logic)
 # ------------------------------------------------------------------
-def create_dataset_iterator(config, split, mesh, batch_size):
-    tokenizer = spm.SentencePieceProcessor(model_file=config.tokenizer_path)
+class GriffinTokenizer:
+    def __init__(self, spm_path: str):
+        self._sp = spm.SentencePieceProcessor(model_file=spm_path)
+
+    @property
+    def pad_id(self) -> int:
+        return self._sp.pad_id()
+
+    def encode(self, text: str) -> jax.Array:
+        ids = [self._sp.bos_id()] + self._sp.encode(text) + [self._sp.eos_id()]
+        return jnp.array(ids, dtype=jnp.int32)
+
+
+@chex.dataclass(frozen=True)
+class TrainingInput:
+    input_tokens: jax.Array
+    target_mask: jax.Array
+
+
+
+
+def make_dataset(config, split: str, mesh, batch_size: int):
+    tokenizer = GriffinTokenizer(config.tokenizer_path)
     per_host = batch_size // jax.process_count()
 
     def gen():
@@ -686,13 +698,13 @@ def create_dataset_iterator(config, split, mesh, batch_size):
                 f"--- formal theorem ---\n{ex['formal_theorem']}\n"
                 f"--- proof ---\n{ex['formal_proof']}"
             )
-            tokens = [tokenizer.bos_id()] + tokenizer.encode(text) + [tokenizer.eos_id()]
-            yield tokens[: config.max_seq_len]
+            tokens = tokenizer.encode(text)[: config.max_seq_len]
+            yield tokens
             yielded += 1
             if yielded >= limit:
                 break
         if yielded == 0:
-            yield [tokenizer.bos_id(), tokenizer.eos_id()]
+            yield jnp.array([tokenizer.pad_id])
 
     tf_ds = (
         tf.data.Dataset.from_generator(
@@ -700,105 +712,118 @@ def create_dataset_iterator(config, split, mesh, batch_size):
             output_signature=tf.TensorSpec(shape=(None,), dtype=tf.int32),
         )
         .shard(num_shards=jax.process_count(), index=jax.process_index())
-        .padded_batch(per_host, padded_shapes=[config.max_seq_len], padding_values=0)
+        .padded_batch(per_host, padded_shapes=[config.max_seq_len], padding_values=tokenizer.pad_id)
         .prefetch(tf.data.AUTOTUNE)
     )
 
     def jax_iter():
         for np_batch in tf_ds.as_numpy_iterator():
-            yield {
-                "inputs": multihost_utils.host_local_array_to_global_array(
-                    np_batch, mesh, PartitionSpec(config.data_axis)
-                )
-            }
+            tokens = multihost_utils.host_local_array_to_global_array(
+                np_batch, mesh, PartitionSpec(config.data_axis)
+            )
+            mask = tokens != tokenizer.pad_id
+            yield TrainingInput(input_tokens=tokens, target_mask=mask)
 
     return jax_iter()
 
-# ------------------------------------------------------------------
-# model
-# ------------------------------------------------------------------
-def get_partition_rules():
-    return (
-        ("embedder/input_embedding", PartitionSpec("model", None)),
-        ("readout/kernel", PartitionSpec(None, "model")),
-        ("mlp_block/ffw_up/w", PartitionSpec(None, None, "model")),
-        ("mlp_block/ffw_down/kernel", PartitionSpec("model", None)),
-        ("attention_block/proj_q/kernel", PartitionSpec(None, "model")),
-        ("attention_block/proj_final/kernel", PartitionSpec("model", None)),
-        (r".*kernel", PartitionSpec("data", None)),
-        (r".*w", PartitionSpec("data", None)),
-        (r".*bias|.*b|.*scale|.*a_param", PartitionSpec()),
-    )
 
+# ------------------------------------------------------------------
+# model / sharding utils
+# ------------------------------------------------------------------
 def load_and_shard_model(config, mesh):
     with jax.default_device(jax.devices()[0]):
         model_cfg = rg.GriffinConfig.from_preset(rg.Preset.RECURRENT_GEMMA_2B_V1)
         model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
-        params_cpu = ocp.PyTreeCheckpointer().restore(config.model_path)
+        params_cpu = rg.load_parameters(config.model_path, "single_device")
 
-    try:
-        from flax.training.common_utils import get_logical_partition_rules
-        pspec_tree = get_logical_partition_rules(params_cpu, get_partition_rules())
-    except ImportError:
-        logging.warning("Using basic sharding – upgrade flax for logical rules")
-        pspec_tree = jtu.tree_map(lambda _: PartitionSpec(), params_cpu)
-
-    shardings = jtu.tree_map(lambda ps: NamedSharding(mesh, ps), pspec_tree)
+    shardings = jax.tree_util.tree_map(lambda _: NamedSharding(mesh, PartitionSpec()), params_cpu)
     with mesh:
-        params_sharded = jax.device_put(params_cpu, shardings)
-    return model, params_sharded, pspec_tree
+        params = jax.device_put(params_cpu, shardings)
+    return model, params
+
 
 # ------------------------------------------------------------------
-# loss / step
+# loss & steps (Colab logic)
 # ------------------------------------------------------------------
+Params = Mapping[str, Any]
+
+
+def get_positions(tokens, pad_id):
+    mask = tokens != pad_id
+    pos = jnp.cumsum(mask, axis=-1) - 1
+    return pos
+
+
+def forward_and_loss_fn(
+    params,
+    *,
+    model: rg.Griffin,
+    input_tokens: jax.Array,
+    target_mask: jax.Array,
+    positions: jax.Array,
+) -> jax.Array:
+    # same as Colab notebook
+    logits, _ = model.apply(
+        {"params": params},
+        tokens=input_tokens[:, :-1],
+        segment_pos=positions[:, :-1],
+        cache=None,
+    )
+    targets = input_tokens[:, 1:]
+    mask = target_mask[:, 1:]
+    one_hot = jax.nn.one_hot(targets, logits.shape[-1])
+    one_hot = one_hot * mask.astype(one_hot.dtype)[..., None]
+    norm = jnp.maximum(jnp.sum(mask), 1e-8)
+    loss = -jnp.sum(jax.nn.log_softmax(logits) * one_hot) / norm
+    return loss
+
+
 class TrainState(train_state.TrainState):
     pass
 
-def loss_fn(logits, batch):
-    labels = jnp.roll(batch["inputs"], -1, axis=-1)
-    mask = batch["inputs"] != 0
-    loss = optax.softmax_cross_entropy_with_integer_labels(
-        logits.astype(jnp.float32), labels
-    )
-    return jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
 
-def _train_step(state, batch, _, model, data_axis_name):
-    # deterministic but unique key per host / device
-    local_key = jax.random.PRNGKey(
-        jax.lax.axis_index(data_axis_name) +
-        jax.process_index() * 10000 +
-        int(state.step)
-    )
-    dropout_rng = jax.random.fold_in(local_key, jax.lax.axis_index(data_axis_name))
+@functools.partial(
+    jax.jit,
+    static_argnames=["model", "pad_id"],
+    donate_argnames=["state"],
+)
+def train_step(state, batch, model, pad_id):
+    positions = get_positions(batch.input_tokens, pad_id)
 
-    def _loss(p):
-        batch_size, seq_len = batch["inputs"].shape
-        segment_pos = jnp.broadcast_to(jnp.arange(seq_len), (batch_size, seq_len))
-        logits = model.apply(
-            {"params": p},
-            batch["inputs"],
-            segment_pos,
-            rngs={"dropout": dropout_rng},
+    def loss_fn(params):
+        return forward_and_loss_fn(
+            params,
+            model=model,
+            input_tokens=batch.input_tokens,
+            target_mask=batch.target_mask,
+            positions=positions,
         )
-        return loss_fn(logits, batch)
 
-    loss, grads = jax.value_and_grad(_loss)(state.params)
-    new_state = state.apply_gradients(grads=grads)
-    return new_state, {"loss": loss}
+    loss, grads = jax.value_and_grad(loss_fn)(state.params)
+    state = state.apply_gradients(grads=grads)
+    return state, {"loss": loss}
 
-def _eval_step(state, batch, model):
-    def _loss(p):
-        batch_size, seq_len = batch["inputs"].shape
-        segment_pos = jnp.broadcast_to(jnp.arange(seq_len), (batch_size, seq_len))
-        logits = model.apply(
-            {"params": p},
-            batch["inputs"],
-            segment_pos,
-        )
-        return loss_fn(logits, batch)
 
-    loss = _loss(state.params)
+@functools.partial(jax.jit, static_argnames=["model", "pad_id"])
+def eval_step(state, batch, model, pad_id):
+    positions = get_positions(batch.input_tokens, pad_id)
+    loss = forward_and_loss_fn(
+        state.params,
+        model=model,
+        input_tokens=batch.input_tokens,
+        target_mask=batch.target_mask,
+        positions=positions,
+    )
     return {"loss": loss}
+
+
+# ------------------------------------------------------------------
+# TFDS helper
+# ------------------------------------------------------------------
+def tfds_load(name: str, split: str, streaming: bool):
+    import tensorflow_datasets as tfds
+    return tfds.load(name, split=split, streaming=streaming)
+
 
 # ------------------------------------------------------------------
 # main
@@ -811,78 +836,71 @@ def main(argv):
     jax.distributed.initialize()
     tf.config.set_visible_devices([], "GPU")
 
-    devices = np.array(jax.devices()).reshape(
-        jax.process_count(), jax.local_device_count()
+    devices = jax.devices()
+    mesh = Mesh(
+        devices.reshape(jax.process_count(), len(devices) // jax.process_count()),
+        (cfg.data_axis, cfg.model_axis),
     )
-    mesh = Mesh(devices, (cfg.data_axis, cfg.model_axis))
 
     logging.set_verbosity(logging.INFO)
     if jax.process_index() == 0:
         logging.info(f"Mesh {mesh} ready on {jax.process_count()} hosts")
-    os.makedirs(cfg.ckpt_dir, exist_ok=True)
 
-    train_it = create_dataset_iterator(cfg, cfg.train_split, mesh, cfg.global_batch_size)
-    eval_it = create_dataset_iterator(cfg, cfg.eval_split, mesh, cfg.eval_batch_size)
+    train_it = make_dataset(cfg, cfg.train_split, mesh, cfg.global_batch_size)
+    eval_it = make_dataset(cfg, cfg.eval_split, mesh, cfg.eval_batch_size)
 
-    model, params, pspecs = load_and_shard_model(cfg, mesh)
+    model, params = load_and_shard_model(cfg, mesh)
 
     opt = optax.MultiSteps(
         optax.chain(
             optax.clip_by_global_norm(cfg.grad_clip_norm),
-            optax.adafactor(learning_rate=cfg.learning_rate),
+            optax.adamw(
+                learning_rate=cfg.learning_rate,
+                b2=0.96,
+                eps=1e-8,
+                weight_decay=0.1,
+            ),
         ),
         every_k_schedule=cfg.grad_accum_steps,
     )
 
+    tokenizer = GriffinTokenizer(cfg.tokenizer_path)
     state = TrainState.create(apply_fn=model.apply, params=params, tx=opt)
 
-    # shard-map wrappers
-    def _spec_for_state(state_template, params_pspec_tree):
-        def _map(path, value):
-            if path and str(path[0]) == "params":
-                return jtu.tree_get(params_pspec_tree, path[1:])
-            elif path and str(path[0]) == "step":
-                return PartitionSpec()
-            return None
-        return jtu.tree_map_with_path(_map, state_template)
-
-    state_pspec = _spec_for_state(state, pspecs)
+    state_pspec = jax.tree_util.tree_map(
+        lambda _: PartitionSpec(), state
+    )
     batch_pspec = PartitionSpec(cfg.data_axis, None)
 
     train_step_sharded = shard_map(
-        partial(_train_step, model=model, data_axis_name=cfg.data_axis),
+        functools.partial(train_step, model=model, pad_id=tokenizer.pad_id),
         mesh=mesh,
-        in_specs=(state_pspec, batch_pspec, None),   # RNG dummy -> None
+        in_specs=(state_pspec, batch_pspec),
         out_specs=(state_pspec, None),
         check_rep=False,
     )
 
     eval_step_sharded = shard_map(
-        partial(_eval_step, model=model),
+        functools.partial(eval_step, model=model, pad_id=tokenizer.pad_id),
         mesh=mesh,
         in_specs=(state_pspec, batch_pspec),
         out_specs=None,
         check_rep=False,
     )
 
-    ckpt_mgr = ocp.CheckpointManager(
-        cfg.ckpt_dir,
-        options=ocp.CheckpointManagerOptions(max_to_keep=1),
-    )
+    ckpt_mgr = ocp.CheckpointManager(cfg.ckpt_dir, ocp.CheckpointManagerOptions(max_to_keep=1))
 
-    rng_key = jax.random.PRNGKey(42)
     best_eval = float("inf")
+    steps = cfg.eval_steps * 5
 
     for epoch in range(cfg.num_epochs):
-        steps = cfg.eval_steps * 5
         if jax.process_index() == 0:
             pbar = tqdm(total=steps, desc=f"Epoch {epoch+1}/{cfg.num_epochs}")
-
         train_losses = []
+
         for step in range(1, steps + 1):
             batch = next(train_it)
-
-            state, metrics = train_step_sharded(state, batch, None)  # no RNG passed
+            state, metrics = train_step_sharded(state, batch)
             train_losses.append(metrics["loss"])
 
             if jax.process_index() == 0:
@@ -901,14 +919,12 @@ def main(argv):
 
                 if jax.process_index() == 0:
                     pbar.set_postfix(train=float(avg_train), eval=float(eval_loss))
-                    logging.info(
-                        f"Step {step}: train={avg_train:.4f} eval={eval_loss:.4f}"
-                    )
+                    logging.info(f"Step {step}: train={avg_train:.4f} eval={eval_loss:.4f}")
                     train_losses.clear()
 
                     if eval_loss < best_eval:
                         best_eval = eval_loss
-                        ckpt_mgr.save(step, args=ocp.args.StandardSave(state))
+                        ckpt_mgr.save(step, ocp.args.StandardSave(state))
                         logging.info("Saved best checkpoint")
 
         if jax.process_index() == 0:
