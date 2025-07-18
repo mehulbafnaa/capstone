@@ -876,16 +876,39 @@ os.environ["JAX_PLATFORMS"] = "tpu"
 os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
+# import numpy as np
+# import jax
+# import jax.numpy as jnp
+# from jax.sharding import Mesh, PartitionSpec, NamedSharding
+# from jax.experimental import multihost_utils
+# import jax.tree_util as jtu
+
+# import optax
+# import orbax.checkpoint as ocp
+# from flax.training import train_state
+# import tensorflow as tf
+# from datasets import load_dataset
+
+# from ml_collections import config_flags, ConfigDict
+# from absl import app, flags, logging
+
+# import os
+# os.environ["JAX_PLATFORMS"] = "tpu"
+# os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+# os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2" # Suppress verbose TF logs
+
 import numpy as np
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
-from jax.experimental import multihost_utils
+from jax.experimental.pjit import pjit
 import jax.tree_util as jtu
+from jax.experimental import multihost_utils
 
 import optax
 import orbax.checkpoint as ocp
 from flax.training import train_state
+from flax.linen import remat
 import tensorflow as tf
 from datasets import load_dataset
 
@@ -894,6 +917,9 @@ from absl import app, flags, logging
 
 import recurrentgemma.jax as rg
 import sentencepiece as spm
+from functools import partial
+from tqdm import tqdm
+
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", help_string="Path to configuration file.")
