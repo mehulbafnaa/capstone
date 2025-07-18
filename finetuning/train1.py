@@ -494,11 +494,16 @@ def main(argv):
     #         )
     #     )
 
-    empty_cache = flax.core.freeze(
-    model.init_cache(
-        batch_size=cfg.global_batch_size,
-        dtype=cfg.weight_dtype,
-    )
+#     empty_cache = flax.core.freeze(
+#     model.init_cache(
+#         batch_size=cfg.global_batch_size,
+#         dtype=cfg.weight_dtype,
+#     )
+# )
+
+    empty_cache = model.init_cache(
+    batch_size=cfg.global_batch_size,
+    dtype=cfg.weight_dtype,
 )
 
 
