@@ -586,6 +586,7 @@ def main(argv):
     # Use pjit for distributed training with proper sharding
     @partial(
         pjit,
+        static_argnums=(3,),
         in_shardings=(state_sharding, batch_sharding, None),
         out_shardings=(state_sharding, None),
         donate_argnums=(0,)
@@ -595,6 +596,7 @@ def main(argv):
 
     @partial(
         pjit,
+        static_argnums=(2,),
         in_shardings=(state_sharding, batch_sharding),
         out_shardings=None
     )
