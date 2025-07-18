@@ -238,6 +238,8 @@
 #     main()
 
 
+
+
 #!/usr/bin/env python3
 """
 Fine-tune RecurrentGemma-2B on FrenzyMath/Herald_proofs
@@ -453,7 +455,7 @@ def _train_step(state, batch, rng, model):
 
     def _loss(p):
 
-        batch_size, _ = batch["inputs"].shape
+        batch_size, seq_len = batch["inputs"].shape
         segment_pos = jnp.broadcast_to(
             jnp.arange(seq_len), (batch_size, seq_len)
         )
