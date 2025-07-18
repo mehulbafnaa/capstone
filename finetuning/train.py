@@ -1261,6 +1261,7 @@ def get_config():
     c.eval_split = "valid"
     c.max_seq_len = 2048
     c.dataset_fraction = 0.001  
+    c.weight_dtype = jnp.bfloat16
     return c
 
 
@@ -1407,9 +1408,7 @@ def main(argv):
     if len(argv) > 1:
         raise app.UsageError("Too many command-line arguments.")
 
-    cfg = FLAGS.config or get_config()
-    if isinstance(cfg.weight_dtype, str):
-        cfg.weight_dtype = getattr(jnp, cfg.weight_dtype)
+    cfg = get_config()
 
     jax.distributed.initialize()
     tf.config.set_visible_devices([], "GPU")
