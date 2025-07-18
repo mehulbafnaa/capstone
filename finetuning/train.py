@@ -552,7 +552,7 @@ def _train_step_core(state, batch, rng_key, step):
     def loss_fn(p):
         logits = state.apply_fn(
             {"params": p}, tokens=batch["input_ids"],
-            segment_pos=batch["segment_pos"], rngs={"dropout": rng},
+            segment_pos=batch["segment_pos"], dropout_rng=rng,
         )[0]
         return compute_loss(logits, batch["labels"])
     loss, grads = jax.value_and_grad(loss_fn)(state.params)
