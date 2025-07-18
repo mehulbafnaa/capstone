@@ -485,7 +485,8 @@ def main(argv):
     # ------------------------------------------------------------------
     with jax.default_device(jax.devices()[0]):
         empty_cache = flax.core.freeze(
-            model.init_cache(batch_size=cfg.global_batch_size)
+            model.init_cache(batch_size=cfg.global_batch_size, dtype=cfg.weight_dtype,
+            )
         )
 
     opt = optax.MultiSteps(
