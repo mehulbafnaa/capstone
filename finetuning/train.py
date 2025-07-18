@@ -562,8 +562,8 @@ def get_config():
 
     # --- Model & Paths ---
     config.model_path = _abs_path("2b-it/2b-it")
-    config.tokenizer_path = _abs_apth("2b-it/tokenizer.model")
-    config.ckpt_dir = _abs_apth("finetuning_checkpoints")
+    config.tokenizer_path = _abs_path("2b-it/tokenizer.model")
+    config.ckpt_dir = _abs_path("finetuning_checkpoints")
 
     # --- Training & Optimizer ---
     config.learning_rate = 1e-5
