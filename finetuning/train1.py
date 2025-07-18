@@ -420,9 +420,9 @@ def loss_fn(logits, batch):
     return jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
 
 
-def _train_step(state, batch, rng, model):
+def _train_step(state, batch, rng, model, data_axis_name)):
     # dropout_rng = jax.random.fold_in(rng, state.step)
-    dropout_rng = jax.random.fold_in(rng, jax.lax.axis_index(cfg.data_axis))
+    dropout_rng = jax.random.fold_in(rng, jax.lax.axis_index(data_axis_name)))
 
     def _loss(p):
         batch_size, seq_len = batch["inputs"].shape
@@ -508,7 +508,7 @@ def main(argv):
     batch_pspec = PartitionSpec(cfg.data_axis, None)
 
     train_step_sharded = shard_map(
-        partial(_train_step, model=model),
+        partial(_train_step, model=model, data_axis_name=cfg.data_axis),
         mesh=mesh,
         in_specs=(state_pspec, batch_pspec, None),
         out_specs=(state_pspec, None),
