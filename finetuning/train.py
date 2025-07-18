@@ -866,10 +866,10 @@ def main(argv):
         # Build a TrainState-shaped sharding tree
     state_sharding = TrainState(
         step=None,                       # scalars are replicated
-        apply_fn=state.apply_fn,         # functions are not sharded
+        apply_fn=None,         # functions are not sharded
         params=shardings,                # this is the dict we already built
-        tx=state.tx,                     # optax state is replicated
-        opt_state=state.opt_state        # optax state is replicated
+        tx=None,                     # optax state is replicated
+        opt_state=None       # optax state is replicated
     )
 
     p_train = jax.jit(
