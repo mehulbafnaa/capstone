@@ -612,13 +612,28 @@ def create_dataset_iterator(config, split, mesh, batch_size):
         padding_values=0 # Use 0 for padding, standard for many tokenizers
     )
 
-    def to_global_jax_array(batch):
-        return multihost_utils.host_local_array_to_global_array(
-            batch, mesh, PartitionSpec(config.data_axis)
-        )
+    # def to_global_jax_array(batch):
+    #     return multihost_utils.host_local_array_to_global_array(
+    #         batch, mesh, PartitionSpec(config.data_axis)
+    #     )
 
-    tf_dataset = tf_dataset.map(lambda x: {"inputs": to_global_jax_array(x)}, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
-    return tf_dataset.as_numpy_iterator()
+    # tf_dataset = tf_dataset.map(lambda x: {"inputs": to_global_jax_array(x)}, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
+
+    tf_dataset = tf_dataset.prefetch(tf.data.AUTOTUNE)
+
+
+    # return tf_dataset.as_numpy_iterator()
+  
+
+    def jax_iterator():
+        for np_batch in tf_dataset.as_numpy_iterator():
+            # np_batch is a plain NumPy array
+            yield {"inputs": multihost_utils.host_local_array_to_global_array(
+                      np_batch, mesh, PartitionSpec(config.data_axis))}
+
+        return jax_iterator()
+
+    
 
 # -----------------------------------------------------------------------------
 # 3. Model Loading and Sharding
