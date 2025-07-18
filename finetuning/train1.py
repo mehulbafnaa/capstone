@@ -458,9 +458,6 @@ def _train_step(state, batch, rng, model):
         logits = state.apply_fn(
             {"params": p},
             tokens=batch["inputs"],
-            segment_pos=jnp.broadcast_to(
-                jnp.arange(batch["inputs"].shape[-1]), batch["inputs"].shape
-            ),
             rngs={"dropout": dropout_rng},
         )[0]
         return loss_fn(logits, batch)
@@ -477,9 +474,7 @@ def _eval_step(state, batch, model):
         logits = state.apply_fn(
             {"params": p},
             tokens=batch["inputs"],
-            segment_pos=jnp.broadcast_to(
-                jnp.arange(batch["inputs"].shape[-1]), batch["inputs"].shape
-            ),
+            rngs={"dropout": dropout_rng},
         )[0]
         return loss_fn(logits, batch)
 
