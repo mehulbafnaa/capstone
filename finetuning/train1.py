@@ -545,7 +545,7 @@ def main(argv):
     batch_pspec = PartitionSpec(cfg.data_axis, None)
 
     train_step_sharded = shard_map(
-        partial(_train_step, model=model, empty_cache=empty_cache),
+        partial(_train_step, model=model),
         mesh=mesh,
         in_specs=(state_pspec, batch_pspec, None),
         out_specs=(state_pspec, None),
@@ -553,7 +553,7 @@ def main(argv):
     )
 
     eval_step_sharded = shard_map(
-        partial(_eval_step, model=model, empty_cache=empty_cache),
+        partial(_eval_step, model=model),
         mesh=mesh,
         in_specs=(state_pspec, batch_pspec),
         out_specs=None,
