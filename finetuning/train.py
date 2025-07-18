@@ -92,12 +92,26 @@ def apply_grads(state):
 # ------------------------------------------------------------------
 # Sharding helpers
 # ------------------------------------------------------------------
+# def safe_fsdp_sharding(pytree, axis_name, num_devices):
+#     """Shard only tensors whose axis-0 length divisible by num_devices."""
+#     def spec(_, x):
+#         if x.ndim >= 1 and x.shape[0] >= num_devices and x.shape[0] % num_devices == 0:
+#             return PartitionSpec(axis_name, *([None] * (x.ndim - 1)))
+#         return PartitionSpec()
+#     return jtu.tree_map_with_path(spec, pytree)
+
+
 def safe_fsdp_sharding(pytree, axis_name, num_devices):
-    """Shard only tensors whose axis-0 length divisible by num_devices."""
-    def spec(_, x):
+    """Shard only tensors whose axis-0 length divisible by num_devices, but skip embedder."""
+    def spec(path, x):
+        # Skip embedder parameters - they should not be sharded along vocab dimension
+        if "embedder" in str(path):
+            return PartitionSpec()
+            
         if x.ndim >= 1 and x.shape[0] >= num_devices and x.shape[0] % num_devices == 0:
             return PartitionSpec(axis_name, *([None] * (x.ndim - 1)))
         return PartitionSpec()
+    
     return jtu.tree_map_with_path(spec, pytree)
 
 def print_tensor_stats(pytree, header):
