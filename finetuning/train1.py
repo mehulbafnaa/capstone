@@ -251,6 +251,14 @@ os.environ["JAX_PLATFORMS"] = "tpu"
 os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
+
+import flax.core.frozen_dict as frozen_dict
+
+def _safe_repr(self):
+    return "<FrozenDict (sharded)>"
+
+frozen_dict.FrozenDict.__repr__ = _safe_repr
+
 import numpy as np
 import flax.core                 
 import jax
