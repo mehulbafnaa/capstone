@@ -781,6 +781,8 @@ def _train_step(state, batch, _, model, data_axis_name):
             batch["inputs"],
             segment_pos,
             rngs={"dropout": dropout_rng},
+            deterministic=False,
+            mutable=False,
         )[0]
         return loss_fn(logits, batch)
 
@@ -797,6 +799,7 @@ def _eval_step(state, batch, model):
             batch["inputs"],
             segment_pos,
             deterministic=True,
+            mutable=False,
         )[0]
         return loss_fn(logits, batch)
 
