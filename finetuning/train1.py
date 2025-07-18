@@ -781,33 +781,18 @@ def make_dataset(config, split: str, mesh, batch_size: int):
 
 
 def load_and_shard_model(config, mesh):
-    # 1. Build model
     model_cfg = rg.GriffinConfig.from_preset(rg.Preset.RECURRENT_GEMMA_2B_V1)
     model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
 
-    # 2. Build concrete sharding tree
-    try:
-        from flax.training.common_utils import get_logical_partition_rules
-        pspec_tree = get_logical_partition_rules(
-            ocp.PyTreeCheckpointer().restore(config.model_path),
-            get_partition_rules()
-        )
-    except ImportError:
-        logging.warning("Using basic sharding – upgrade flax for logical rules")
-        pspec_tree = jax.tree_util.tree_map(lambda _: PartitionSpec(), ocp.PyTreeCheckpointer().restore(config.model_path))
+    # 1. Build sharding tree
+    pspec_tree = jax.tree_util.tree_map(lambda _: PartitionSpec(), ocp.PyTreeCheckpointer().restore(config.model_path))
+    shardings = jax.tree_util.tree_map(lambda ps: NamedSharding(mesh, ps), pspec_tree)
 
-    shardings = jax.tree_util.tree_map(
-        lambda ps: NamedSharding(mesh, ps), pspec_tree
-    )
-
-    # 3. Restore with explicit, concrete sharding
+    # 2. Restore **inside mesh** with concrete sharding
     with mesh:
         params = ocp.PyTreeCheckpointer().restore(
             config.model_path,
-            restore_args=ocp.args.PyTreeRestore(
-                item=None,
-                sharding=shardings,
-            ),
+            restore_args=ocp.args.StandardRestore(sharding=shardings),
         )
     return model, params, pspec_tree
 
