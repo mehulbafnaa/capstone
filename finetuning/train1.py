@@ -420,7 +420,7 @@ def loss_fn(logits, batch):
     return jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
 
 
-def _train_step(state, batch, rng, model):
+def _train_step(state, batch, rng, model, empty_cache):
     dropout_rng = jax.random.fold_in(rng, state.step)
 
     def _loss(p):
@@ -441,7 +441,7 @@ def _train_step(state, batch, rng, model):
     return new_state, {"loss": loss}
 
 
-def _eval_step(state, batch, model):
+def _eval_step(state, batch, model, empty_cache):
     def _loss(p):
         batch_size, seq_len = batch["inputs"].shape
         segment_pos = jnp.broadcast_to(jnp.arange(seq_len), (batch_size, seq_len))
