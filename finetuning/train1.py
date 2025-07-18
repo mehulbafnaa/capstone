@@ -257,6 +257,7 @@ from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.pjit import pjit
 import jax.tree_util as jtu
 from jax.experimental import multihost_utils
+from jax.experimental.shard_map import shard_map
 
 import optax
 import orbax.checkpoint as ocp
@@ -447,6 +448,28 @@ def loss_fn(logits, batch):
     return jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
 
 
+# def train_step(state, batch, rng):
+#     dropout_rng = jax.random.fold_in(rng, state.step)
+
+#     def loss_and_grad(p):
+#         logits = state.apply_fn(
+#             {"params": p},
+#             tokens=batch["inputs"],
+#             segment_pos=jnp.broadcast_to(
+#                 jnp.arange(batch["inputs"].shape[-1]),
+#                 batch["inputs"].shape
+#             ),
+#             rngs={"dropout": dropout_rng},
+#         )[0]
+#         return loss_fn(logits, batch)
+
+#     loss, grads = jax.value_and_grad(loss_and_grad)(state.params)
+#     new_state = state.apply_gradients(grads=grads)
+#     return new_state, {"loss": loss}
+
+
+from jax.experimental.shard_map import shard_map
+
 def train_step(state, batch, rng):
     dropout_rng = jax.random.fold_in(rng, state.step)
 
@@ -462,21 +485,53 @@ def train_step(state, batch, rng):
         )[0]
         return loss_fn(logits, batch)
 
+    # Shard model forward pass to avoid partitioning Mosaic kernel
+    loss_and_grad = shard_map(
+        loss_and_grad,
+        mesh=mesh,
+        in_specs=(None,),  # params are already sharded
+        out_specs=None,
+        check_rep=False,
+    )
+
     loss, grads = jax.value_and_grad(loss_and_grad)(state.params)
     new_state = state.apply_gradients(grads=grads)
     return new_state, {"loss": loss}
 
 
+# def eval_step(state, batch):
+#     logits = state.apply_fn(
+#         {"params": state.params},
+#         tokens=batch["inputs"],
+#         segment_pos=jnp.broadcast_to(
+#             jnp.arange(batch["inputs"].shape[-1]),
+#             batch["inputs"].shape
+#         ),
+#     )[0]
+#     return {"loss": loss_fn(logits, batch)}
+
+
 def eval_step(state, batch):
-    logits = state.apply_fn(
-        {"params": state.params},
-        tokens=batch["inputs"],
-        segment_pos=jnp.broadcast_to(
-            jnp.arange(batch["inputs"].shape[-1]),
-            batch["inputs"].shape
-        ),
-    )[0]
-    return {"loss": loss_fn(logits, batch)}
+    def forward(p):
+        logits = state.apply_fn(
+            {"params": p},
+            tokens=batch["inputs"],
+            segment_pos=jnp.broadcast_to(
+                jnp.arange(batch["inputs"].shape[-1]),
+                batch["inputs"].shape
+            ),
+        )[0]
+        return loss_fn(logits, batch)
+
+    forward = shard_map(
+        forward,
+        mesh=mesh,
+        in_specs=(None,),
+        out_specs=None,
+        check_rep=False,
+    )
+
+    return {"loss": forward(state.params)}
 
 
 # ------------------------------------------------------------------
