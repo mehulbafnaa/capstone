@@ -524,11 +524,14 @@ def main(argv):
     )
 
     state_sharding = _make_state_sharding(state, shardings)
+    
+    # Create NamedSharding for batch data
+    batch_sharding = NamedSharding(mesh, PartitionSpec(cfg.data_axis))
 
     # Use pjit for distributed training with proper sharding
     @partial(
         pjit,
-        in_shardings=(state_sharding, PartitionSpec(cfg.data_axis), None),
+        in_shardings=(state_sharding, batch_sharding, None),
         out_shardings=(state_sharding, None),
         donate_argnums=(0,)
     )
@@ -537,7 +540,7 @@ def main(argv):
 
     @partial(
         pjit,
-        in_shardings=(state_sharding, PartitionSpec(cfg.data_axis)),
+        in_shardings=(state_sharding, batch_sharding),
         out_shardings=None
     )
     def p_eval_step(state, batch):
@@ -548,54 +551,54 @@ def main(argv):
 
     best_eval = float("inf")
     for epoch in range(cfg.num_epochs):
-        steps = cfg.eval_steps * 5
-        if jax.process_index() == 0:
-            pbar = tqdm(total=steps, desc=f"Epoch {epoch+1}/{cfg.num_epochs}")
+            steps = cfg.eval_steps * 5
+            if jax.process_index() == 0:
+                pbar = tqdm(total=steps, desc=f"Epoch {epoch+1}/{cfg.num_epochs}")
 
-        train_losses = []
-        for step in range(1, steps + 1):
-            batch = next(train_it)
-            
-            # Split RNG for this step
-            rng_key, step_rng = jax.random.split(rng_key)
-            
-            state, metrics = p_train_step(state, batch, step_rng)
-            train_losses.append(metrics["loss"])
+            train_losses = []
+            for step in range(1, steps + 1):
+                batch = next(train_it)
+                
+                # Split RNG for this step
+                rng_key, step_rng = jax.random.split(rng_key)
+                
+                state, metrics = p_train_step(state, batch, step_rng)
+                train_losses.append(metrics["loss"])
+
+                if jax.process_index() == 0:
+                    pbar.update(1)
+
+                if step % cfg.eval_steps == 0:
+                    # Synchronize across hosts for evaluation
+                    multihost_utils.sync_global_devices("eval")
+                    
+                    eval_losses = []
+                    for _ in range(50):
+                        eval_batch = next(eval_it)
+                        eval_metrics = p_eval_step(state, eval_batch)
+                        eval_losses.append(eval_metrics["loss"])
+                    
+                    # Average evaluation losses
+                    eval_loss = jnp.mean(jnp.array(eval_losses))
+                    avg_train = jnp.mean(jnp.array(train_losses))
+                    
+                    if jax.process_index() == 0:
+                        pbar.set_postfix(train=float(avg_train), eval=float(eval_loss))
+                        logging.info(
+                            f"Step {step}: train={avg_train:.4f} eval={eval_loss:.4f}"
+                        )
+                        train_losses.clear()
+
+                        if eval_loss < best_eval:
+                            best_eval = eval_loss
+                            ckpt_mgr.save(
+                                step,
+                                args=ocp.args.StandardSave(state),
+                            )
+                            logging.info("Saved best checkpoint")
 
             if jax.process_index() == 0:
-                pbar.update(1)
-
-            if step % cfg.eval_steps == 0:
-                # Synchronize across hosts for evaluation
-                multihost_utils.sync_global_devices("eval")
-                
-                eval_losses = []
-                for _ in range(50):
-                    eval_batch = next(eval_it)
-                    eval_metrics = p_eval_step(state, eval_batch)
-                    eval_losses.append(eval_metrics["loss"])
-                
-                # Average evaluation losses
-                eval_loss = jnp.mean(jnp.array(eval_losses))
-                avg_train = jnp.mean(jnp.array(train_losses))
-                
-                if jax.process_index() == 0:
-                    pbar.set_postfix(train=float(avg_train), eval=float(eval_loss))
-                    logging.info(
-                        f"Step {step}: train={avg_train:.4f} eval={eval_loss:.4f}"
-                    )
-                    train_losses.clear()
-
-                    if eval_loss < best_eval:
-                        best_eval = eval_loss
-                        ckpt_mgr.save(
-                            step,
-                            args=ocp.args.StandardSave(state),
-                        )
-                        logging.info("Saved best checkpoint")
-
-        if jax.process_index() == 0:
-            pbar.close()
+                pbar.close()
 
     ckpt_mgr.wait_until_finished()
     if jax.process_index() == 0:
