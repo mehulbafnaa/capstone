@@ -767,38 +767,60 @@ class TrainState(train_state.TrainState):
     pass
 
 
-def loss_fn(logits, batch):
-    labels = jnp.roll(batch["inputs"], -1, axis=-1)
-    mask = batch["inputs"] != 0
-    loss = optax.softmax_cross_entropy_with_integer_labels(
-        logits.astype(jnp.float32), labels
+def forward_and_loss_fn(
+    params,
+    model,
+    input_tokens,
+    positions,
+):
+    """Forward pass and loss function following RecurrentGemma tutorial pattern."""
+    batch_size = input_tokens.shape[0]
+    
+    # Forward pass - no cache needed for training
+    # Exclude the last token from input as it doesn't appear in targets
+    logits, _ = model(
+        params,
+        input_tokens[:, :-1],
+        positions[:, :-1],
+        cache=None,  # No attention cache needed
     )
-    return jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
+    
+    # Shift tokens for next-token prediction
+    targets = input_tokens[:, 1:]
+    
+    # Calculate loss
+    logits_flat = logits.reshape(-1, logits.shape[-1])
+    targets_flat = targets.reshape(-1)
+    
+    # Create mask for non-padding tokens
+    mask = targets_flat != 0
+    
+    # Calculate cross-entropy loss
+    loss = optax.softmax_cross_entropy_with_integer_labels(
+        logits_flat.astype(jnp.float32), 
+        targets_flat
+    )
+    
+    # Apply mask and compute mean
+    loss = jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
+    
+    return loss
 
 
 def _train_step(state, batch, rng, model, data_axis_name):
-    dropout_rng = jax.random.fold_in(rng, jax.lax.axis_index(data_axis_name))
-
-    def _loss(p):
-        batch_size, seq_len = batch["inputs"].shape
-        segment_pos = jnp.broadcast_to(jnp.arange(seq_len), (batch_size, seq_len))
+    """Train step following RecurrentGemma pattern."""
+    
+    def _loss(params):
+        # Build position indices
+        positions = jnp.arange(batch["inputs"].shape[1])[None, :]
+        positions = jnp.broadcast_to(positions, batch["inputs"].shape)
         
-        # RecurrentGemma returns (logits, cache) tuple
-        outputs = state.apply_fn(
-            {"params": p},
+        return forward_and_loss_fn(
+            params,
+            model,
             batch["inputs"],
-            segment_pos,
-            # deterministic=False,
-            # rngs={"dropout": dropout_rng},
+            positions,
         )
-        
-        # Handle both tuple and single output cases
-        if isinstance(outputs, tuple):
-            logits = outputs[0]
-        else:
-            logits = outputs
-            
-        return loss_fn(logits, batch)
 
     loss, grads = jax.value_and_grad(_loss)(state.params)
     new_state = state.apply_gradients(grads=grads)
@@ -806,25 +828,19 @@ def _train_step(state, batch, rng, model, data_axis_name):
 
 
 def _eval_step(state, batch, model):
-    def _loss(p):
-        batch_size, seq_len = batch["inputs"].shape
-        segment_pos = jnp.broadcast_to(jnp.arange(seq_len), (batch_size, seq_len))
+    """Eval step following RecurrentGemma pattern."""
+    
+    def _loss(params):
+        # Build position indices
+        positions = jnp.arange(batch["inputs"].shape[1])[None, :]
+        positions = jnp.broadcast_to(positions, batch["inputs"].shape)
         
-        # RecurrentGemma returns (logits, cache) tuple
-        outputs = state.apply_fn(
-            {"params": p},
+        return forward_and_loss_fn(
+            params,
+            model,
             batch["inputs"],
-            segment_pos,
-            # deterministic=True,
+            positions,
         )
-        
-        # Handle both tuple and single output cases
-        if isinstance(outputs, tuple):
-            logits = outputs[0]
-        else:
-            logits = outputs
-            
-        return loss_fn(logits, batch)
 
     loss = _loss(state.params)
     return {"loss": loss}
@@ -864,6 +880,7 @@ def main(argv):
         every_k_schedule=cfg.grad_accum_steps,
     )
 
+    # Create train state but note we won't use state.apply_fn
     state = TrainState.create(apply_fn=model.apply, params=params, tx=opt)
 
     # shard-map wrappers
