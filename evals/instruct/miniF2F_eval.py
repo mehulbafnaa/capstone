@@ -139,7 +139,7 @@ def _quick_compile_check(code: str, lean_project_path: Path, lean_src_path: Path
             cwd=lean_project_path,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=180,
         )
         return proc.returncode == 0
     except Exception:
