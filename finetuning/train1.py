@@ -387,12 +387,33 @@ def get_partition_rules():
     )
 
 
+# def load_and_shard_model(config, mesh):
+#     with jax.default_device(jax.devices()[0]):
+#         model_cfg = rg.GriffinConfig.from_preset(rg.Preset.RECURRENT_GEMMA_2B_V1)
+#         model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
+#         params_cpu = ocp.PyTreeCheckpointer().restore(config.model_path)
+
+#     try:
+#         from flax.training.common_utils import get_logical_partition_rules
+#         pspec_tree = get_logical_partition_rules(params_cpu, get_partition_rules())
+#     except ImportError:
+#         logging.warning("Using basic sharding – upgrade flax for logical rules")
+#         pspec_tree = jtu.tree_map(lambda _: PartitionSpec(), params_cpu)
+
+#     shardings = jtu.tree_map(lambda p: p.spec, jtu.tree_map(lambda p: mesh, pspec_tree))
+#     with mesh:
+#         params_sharded = jax.device_put(params_cpu, jtu.tree_map(lambda p: mesh, pspec_tree))
+#     return model, params_sharded, shardings
+
+
+
 def load_and_shard_model(config, mesh):
     with jax.default_device(jax.devices()[0]):
         model_cfg = rg.GriffinConfig.from_preset(rg.Preset.RECURRENT_GEMMA_2B_V1)
         model = rg.Griffin(model_cfg, dtype=config.weight_dtype)
         params_cpu = ocp.PyTreeCheckpointer().restore(config.model_path)
 
+    # build PartitionSpec tree
     try:
         from flax.training.common_utils import get_logical_partition_rules
         pspec_tree = get_logical_partition_rules(params_cpu, get_partition_rules())
@@ -400,10 +421,11 @@ def load_and_shard_model(config, mesh):
         logging.warning("Using basic sharding – upgrade flax for logical rules")
         pspec_tree = jtu.tree_map(lambda _: PartitionSpec(), params_cpu)
 
-    shardings = jtu.tree_map(lambda p: p.spec, jtu.tree_map(lambda p: mesh, pspec_tree))
+    # create NamedSharding tree
+    shardings = jtu.tree_map(lambda p: p, pspec_tree)  # already PartitionSpec
     with mesh:
-        params_sharded = jax.device_put(params_cpu, jtu.tree_map(lambda p: mesh, pspec_tree))
-    return model, params_sharded, shardings
+        params_sharded = jax.device_put(params_cpu, jtu.tree_map(lambda p: p, pspec_tree))
+    return model, params_sharded, pspec_tree
 
 
 # ------------------------------------------------------------------
