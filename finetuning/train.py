@@ -888,7 +888,7 @@ def main(argv):
 
     state_sharding = _make_state_sharding(state, shardings)
 
-    p_train = jax.jit(
+    p_train = pjit(
         # partial(train_step, axis_name=cfg.data_axis),
         train_step,
         in_shardings=(state_sharding, None, None),
@@ -897,7 +897,7 @@ def main(argv):
         axis_name="data"
     )
 
-    p_eval = jax.jit(
+    p_eval = pjit(
         eval_step,
         in_shardings=(state_sharding, None),
         out_shardings=None,
