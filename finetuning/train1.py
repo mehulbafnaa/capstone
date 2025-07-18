@@ -550,25 +550,43 @@ def main(argv):
 
 
 
-        # 1. Build a PartitionSpec tree that mirrors the full TrainState
-    def _train_state_pspec(params_pspec_tree):
-        return TrainState(
-            step=PartitionSpec(),                        # scalar, replicated
-            apply_fn=None,                               # not a leaf → None
-            tx=None,                                     # not a leaf → None
-            opt_state=None,                              # None → will be inferred by tx
-            params=params_pspec_tree,                    # the tree you already built
-        )
+        # ------------------------------------------------------------------
+    # Build a pytree of PartitionSpecs that matches TrainState structure
+    # ------------------------------------------------------------------
+    from flax import struct
 
-    state_pspec_full = _train_state_pspec(
+    def _spec_for_state(state_template, params_pspec_tree):
+        """
+        Return a dict that has the same keys as TrainState but whose
+        leaves are PartitionSpec / None, ready to be used in shard_map.
+        """
+        flat, treedef = jtu.tree_flatten_with_path(state_template)
+        spec_flat = []
+        for kp, val in flat:
+            key = kp[0].key if kp else None
+            if key == "params":
+                spec_flat.append(jtu.tree_get(params_pspec_tree, kp[1:]))
+            elif key in ("step", "opt_state"):
+                # scalar or opaque → replicated
+                spec_flat.append(PartitionSpec())
+            else:
+                # apply_fn, tx  etc.  (non-arrays) → None
+                spec_flat.append(None)
+        return jtu.tree_unflatten(treedef, spec_flat)
+
+    # Build the pspec tree for the entire state object
+    state_pspec_full = _spec_for_state(
+        state,  # real TrainState instance you already created
         jtu.tree_map(lambda x: x.spec if hasattr(x, "spec") else x, shardings)
     )
 
-    # 2. Re-create the shard_map wrappers with the correct spec
+    batch_pspec = PartitionSpec(cfg.data_axis, None)
+
+    # Re-create shard_map wrappers
     train_step_sharded = shard_map(
         _train_step,
         mesh=mesh,
-        in_specs=(state_pspec_full, PartitionSpec(cfg.data_axis, None), None),
+        in_specs=(state_pspec_full, batch_pspec, None),
         out_specs=(state_pspec_full, None),
         check_rep=False,
     )
@@ -576,7 +594,7 @@ def main(argv):
     eval_step_sharded = shard_map(
         _eval_step,
         mesh=mesh,
-        in_specs=(state_pspec_full, PartitionSpec(cfg.data_axis, None)),
+        in_specs=(state_pspec_full, batch_pspec),
         out_specs=None,
         check_rep=False,
     )
