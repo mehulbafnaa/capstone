@@ -448,7 +448,7 @@ def loss_fn(logits, batch):
     return jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
 
 
-def _train_step(state, batch, rng):
+def _train_step(state, batch, rng, model):
     dropout_rng = jax.random.fold_in(rng, state.step)
 
     def _loss(p):
@@ -471,7 +471,7 @@ def _train_step(state, batch, rng):
     return new_state, {"loss": loss}
 
 
-def _eval_step(state, batch):
+def _eval_step(state, batch, model):
     def _loss(p):
         cache = model.init_cache(batch_size, seq_len)
         logits = state.apply_fn(
@@ -590,7 +590,7 @@ def main(argv):
 
     # Re-create shard_map wrappers
     train_step_sharded = shard_map(
-        _train_step,
+        partial(_train_step, model=model)
         mesh=mesh,
         in_specs=(state_pspec_full, batch_pspec, None),
         out_specs=(state_pspec_full, None),
@@ -598,7 +598,7 @@ def main(argv):
     )
 
     eval_step_sharded = shard_map(
-        _eval_step,
+        partial(_eval_step, model=model)
         mesh=mesh,
         in_specs=(state_pspec_full, batch_pspec),
         out_specs=None,
