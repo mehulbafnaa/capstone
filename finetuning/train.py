@@ -952,7 +952,7 @@ def get_config():
     c.eval_batch_size = 32
 
     c.dataset_name = "HaimingW/miniF2F-lean4"
-    c.train_split = "train"
+    c.train_split = "test"
     c.eval_split = "valid"
     c.max_seq_len = 2048
 
