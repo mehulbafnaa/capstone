@@ -723,11 +723,120 @@ def eval_step(state, batch):
     )[0]
     return {"loss": loss_fn(logits, batch)}
 
+# # -----------------------------------------------------------------------------
+# # 5. Main Execution
+# # -----------------------------------------------------------------------------
+# def main(argv):
+#     config = FLAGS.config
+#     jax.distributed.initialize()
+#     tf.config.set_visible_devices([], "GPU") # Ensure TF does not grab GPU memory
+
+#     # Create the 2D device mesh: (num_hosts, devices_per_host) -> e.g., (2, 8)
+#     mesh = Mesh(jax.devices(), (config.data_axis, config.model_axis))
+    
+#     logging.set_verbosity(logging.INFO)
+#     if jax.process_index() == 0:
+#         logging.info("--- Memory-Optimized Training Run ---")
+#         logging.info(f"JAX initialized on {jax.process_count()} hosts with {jax.local_device_count()} devices each.")
+#         logging.info(f"Device mesh created with shape: {mesh.shape}")
+#         logging.info(f"Using Activation Rematerialization: {config.use_remat}")
+
+#     # --- Setup ---
+#     rng = jax.random.PRNGKey(42)
+#     os.makedirs(config.ckpt_dir, exist_ok=True)
+    
+#     # --- Data Pipeline ---
+#     train_iterator = create_dataset_iterator(config, config.train_split, mesh, config.global_batch_size)
+#     eval_iterator = create_dataset_iterator(config, config.eval_split, mesh, config.eval_batch_size)
+
+#     # --- Model and State ---
+#     model, params, sharding = load_and_shard_model(config, mesh)
+    
+#     # Optimizer: Adafactor for memory efficiency, wrapped in MultiSteps for gradient accumulation
+#     optimizer = optax.MultiSteps(
+#         optax.chain(
+#             optax.clip_by_global_norm(config.grad_clip_norm),
+#             optax.adafactor(learning_rate=config.learning_rate)
+#         ),
+#         every_k_schedule=config.grad_accum_steps
+#     )
+    
+#     state = TrainingState.create(apply_fn=model.apply, params=params, tx=optimizer)
+#     del params # Free up CPU memory after sharding
+
+#     # Orbax for sharded checkpointing
+#     checkpointer = ocp.PyTreeCheckpointer()
+#     ckpt_mngr = ocp.CheckpointManager(config.ckpt_dir, checkpointer)
+    
+#     # --- JIT the step functions with sharding annotations ---
+#     p_train_step = pjit(train_step, in_shardings=(sharding, None), out_shardings=(sharding, None))
+#     p_eval_step = pjit(eval_step, in_shardings=(sharding, None), out_shardings=None)
+    
+#     # --- Training Loop ---
+#     if jax.process_index() == 0: logging.info("🚀 Starting training...")
+
+#     best_eval_loss = float('inf')
+#     for epoch in range(config.num_epochs):
+#         train_metrics = []
+#         if jax.process_index() == 0:
+#             pbar = tqdm(total=config.eval_steps, desc=f"Epoch {epoch+1}/{config.num_epochs}")
+
+#         for step in range(1, config.eval_steps * 5 + 1): # Simplified step count for demonstration
+#             batch = next(train_iterator)
+#             rng, step_rng = jax.random.split(rng)
+            
+#             state, metrics = p_train_step(state, batch, step_rng)
+#             train_metrics.append(metrics)
+
+#             if jax.process_index() == 0: pbar.update(1)
+
+#             # --- Evaluation and Checkpointing ---
+#             if state.step > 0 and state.step % config.eval_steps == 0:
+#                 multihost_utils.sync_global_devices("eval_start")
+#                 eval_loss = 0
+#                 eval_batches = 50 # Run on a fixed number of eval batches
+#                 for _ in range(eval_batches):
+#                     eval_batch = next(eval_iterator)
+#                     eval_metrics = p_eval_step(state, eval_batch)
+#                     eval_loss += eval_metrics['loss']
+                
+#                 # Sync and average metrics across all hosts
+#                 eval_loss = multihost_utils.process_allgather(eval_loss).mean() / eval_batches
+#                 train_loss_gathered = multihost_utils.process_allgather([m['loss'] for m in train_metrics])
+#                 avg_train_loss = jnp.mean(train_loss_gathered)
+                
+#                 if jax.process_index() == 0:
+#                     pbar.set_postfix(train_loss=f"{avg_train_loss:.4f}", eval_loss=f"{eval_loss:.4f}")
+#                     logging.info(f"\nStep {state.step}: Train Loss={avg_train_loss:.4f}, Eval Loss={eval_loss:.4f}")
+#                     train_metrics.clear()
+                    
+#                     if eval_loss < best_eval_loss:
+#                         best_eval_loss = eval_loss
+#                         logging.info(f"New best eval loss! Saving checkpoint to {config.ckpt_dir}")
+#                         ckpt_mngr.save(step=state.step, args=ocp.args.StandardSave(state))
+                
+#                 if jax.process_index() == 0: pbar.reset()
+
+#     ckpt_mngr.wait_until_finished()
+#     if jax.process_index() == 0: logging.info("✅ Training complete.")
+
+# if __name__ == "__main__":
+#     flags.DEFINE_config_dict('config', get_config(), "Configuration dictionary.")
+#     app.run(main)
+
+
+
 # -----------------------------------------------------------------------------
 # 5. Main Execution
 # -----------------------------------------------------------------------------
 def main(argv):
+    if len(argv) > 1:
+        raise app.UsageError("Too many command-line arguments.")
+
+    # The config is automatically populated by absl from the --config flag
+    # which was defined by config_flags.DEFINE_config_file() at the top.
     config = FLAGS.config
+
     jax.distributed.initialize()
     tf.config.set_visible_devices([], "GPU") # Ensure TF does not grab GPU memory
 
@@ -745,14 +854,13 @@ def main(argv):
     rng = jax.random.PRNGKey(42)
     os.makedirs(config.ckpt_dir, exist_ok=True)
     
-    # --- Data Pipeline ---
+    # --- Data ---
     train_iterator = create_dataset_iterator(config, config.train_split, mesh, config.global_batch_size)
     eval_iterator = create_dataset_iterator(config, config.eval_split, mesh, config.eval_batch_size)
 
     # --- Model and State ---
     model, params, sharding = load_and_shard_model(config, mesh)
     
-    # Optimizer: Adafactor for memory efficiency, wrapped in MultiSteps for gradient accumulation
     optimizer = optax.MultiSteps(
         optax.chain(
             optax.clip_by_global_norm(config.grad_clip_norm),
@@ -762,13 +870,12 @@ def main(argv):
     )
     
     state = TrainingState.create(apply_fn=model.apply, params=params, tx=optimizer)
-    del params # Free up CPU memory after sharding
+    del params # Free up CPU memory
 
-    # Orbax for sharded checkpointing
     checkpointer = ocp.PyTreeCheckpointer()
     ckpt_mngr = ocp.CheckpointManager(config.ckpt_dir, checkpointer)
     
-    # --- JIT the step functions with sharding annotations ---
+    # --- JIT the step functions ---
     p_train_step = pjit(train_step, in_shardings=(sharding, None), out_shardings=(sharding, None))
     p_eval_step = pjit(eval_step, in_shardings=(sharding, None), out_shardings=None)
     
@@ -781,7 +888,8 @@ def main(argv):
         if jax.process_index() == 0:
             pbar = tqdm(total=config.eval_steps, desc=f"Epoch {epoch+1}/{config.num_epochs}")
 
-        for step in range(1, config.eval_steps * 5 + 1): # Simplified step count for demonstration
+        # Note: A real implementation should calculate total steps more accurately.
+        for step in range(1, config.eval_steps * 5 + 1):
             batch = next(train_iterator)
             rng, step_rng = jax.random.split(rng)
             
@@ -790,21 +898,19 @@ def main(argv):
 
             if jax.process_index() == 0: pbar.update(1)
 
-            # --- Evaluation and Checkpointing ---
             if state.step > 0 and state.step % config.eval_steps == 0:
                 multihost_utils.sync_global_devices("eval_start")
                 eval_loss = 0
-                eval_batches = 50 # Run on a fixed number of eval batches
+                eval_batches = 50
                 for _ in range(eval_batches):
                     eval_batch = next(eval_iterator)
                     eval_metrics = p_eval_step(state, eval_batch)
                     eval_loss += eval_metrics['loss']
                 
-                # Sync and average metrics across all hosts
                 eval_loss = multihost_utils.process_allgather(eval_loss).mean() / eval_batches
                 train_loss_gathered = multihost_utils.process_allgather([m['loss'] for m in train_metrics])
                 avg_train_loss = jnp.mean(train_loss_gathered)
-                
+
                 if jax.process_index() == 0:
                     pbar.set_postfix(train_loss=f"{avg_train_loss:.4f}", eval_loss=f"{eval_loss:.4f}")
                     logging.info(f"\nStep {state.step}: Train Loss={avg_train_loss:.4f}, Eval Loss={eval_loss:.4f}")
@@ -821,5 +927,6 @@ def main(argv):
     if jax.process_index() == 0: logging.info("✅ Training complete.")
 
 if __name__ == "__main__":
-    flags.DEFINE_config_dict('config', get_config(), "Configuration dictionary.")
+    # The config_flags.DEFINE_config_file at the top of the script registers the --config flag.
+    # absl.app.run() automatically parses this and other flags, then calls our main function.
     app.run(main)
