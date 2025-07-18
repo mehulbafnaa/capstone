@@ -687,17 +687,18 @@ def load_and_shard_model(config, mesh):
         partition_spec_tree = jtu.tree_map(lambda _: PartitionSpec(), params_cpu)
 
 
-    sharding = jtu.tree_map(lambda p: NamedSharding(mesh, p), partition_spec_tree)
+    shardings = jtu.tree_map(lambda p: NamedSharding(mesh, p), partition_spec_tree)
 
     # pjit-ed function to move and shard params from CPU to TPU
-    @pjit(out_shardings=sharding)
-    def shard_params():
-        return params_cpu
+    # @pjit(out_shardings=sharding)
+
 
     with mesh:
-        params_sharded = shard_params()
+        params_sharded = jax.device_put(params_cpu, shardings)
 
-    return model, params_sharded, sharding
+
+
+    return model, params_sharded, shardings
 
 # -----------------------------------------------------------------------------
 # 4. Training State and Step Functions
