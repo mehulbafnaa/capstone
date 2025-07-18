@@ -430,9 +430,7 @@ def _train_step(state, batch, rng, model):
             {"params": p},
             batch["inputs"],
             segment_pos,
-            # enable_dropout=True,
-            # cache=empty_cache,
-            rngs={"dropout": dropout_rng},
+            rngs=flax.core.freeze({"dropout": dropout_rng}),
         )[0]
         return loss_fn(logits, batch)
 
@@ -449,8 +447,6 @@ def _eval_step(state, batch, model):
             {"params": p},
             batch["inputs"],
             segment_pos,
-            # cache=empty_cache,
-            # enable_dropout=False,
             deterministic=True,
         )[0]
         return loss_fn(logits, batch)
@@ -485,41 +481,7 @@ def main(argv):
 
     model, params, pspecs = load_and_shard_model(cfg, mesh)
 
-    #     ------------------------------------------------------------------
-    # Build an empty, hashable cache
-    # ------------------------------------------------------------------
-    # with jax.default_device(jax.devices("tpu")[0]):
-    #     empty_cache = flax.core.freeze(
-    #         model.init_cache(batch_size=cfg.global_batch_size, dtype=cfg.weight_dtype,
-    #         )
-    #     )
 
-#     empty_cache = flax.core.freeze(
-#     model.init_cache(
-#         batch_size=cfg.global_batch_size,
-#         dtype=cfg.weight_dtype,
-#     )
-# )
-
-#     empty_cache = model.init_cache(
-#     batch_size=cfg.global_batch_size,
-#     dtype=cfg.weight_dtype,
-# )
-
-
-#     # ------------------------------------------------------------------
-# # Build an empty cache *inside* the mesh so every host can see it
-#     # ------------------------------------------------------------------
-#     with mesh:
-#         empty_cache = jax.jit(
-#             lambda: flax.core.freeze(
-#                 model.init_cache(
-#                     batch_size=cfg.global_batch_size,
-#                     dtype=cfg.weight_dtype,
-#                 )
-#             ),
-#             device=jax.devices("tpu")[0],   # build on CPU
-#         )()
 
     opt = optax.MultiSteps(
         optax.chain(
