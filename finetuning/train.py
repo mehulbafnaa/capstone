@@ -822,7 +822,8 @@ def train_step(state, batch, rng, axis_name):
         return loss_fn(logits, batch)
 
     loss, grads = jax.value_and_grad(loss_and_grad)(state.params)
-    grads = jax.lax.pmean(grads, axis_name=axis_name)
+    # grads = jax.lax.pmean(grads, axis_name=axis_name)
+    grads = jax.lax.pmean(grads, axis_name="data")
     new_state = state.apply_gradients(grads=grads)
     return new_state, {"loss": loss}
 
@@ -888,14 +889,15 @@ def main(argv):
     state_sharding = _make_state_sharding(state, shardings)
 
     p_train = jax.jit(
-        partial(train_step, axis_name=cfg.data_axis),
+        # partial(train_step, axis_name=cfg.data_axis),
+        train_step,
         in_shardings=(state_sharding, None, None),
         out_shardings=(state_sharding, None),
         donate_argnums=(0,),
     )
 
     p_eval = jax.jit(
-        partial(eval_step, axis_name=cfg.data_axis),
+        eval_step,
         in_shardings=(state_sharding, None),
         out_shardings=None,
     )
