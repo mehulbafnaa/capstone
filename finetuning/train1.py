@@ -778,7 +778,7 @@ def _train_step(state, batch, _, model, data_axis_name):
         batch_size, seq_len = batch["inputs"].shape
         segment_pos = jnp.broadcast_to(jnp.arange(seq_len), (batch_size, seq_len))
         logits = model.apply(
-            {"params": p},
+            {"params": p, 'cache': {}},
             batch["inputs"],
             segment_pos,
             rngs={"dropout": dropout_rng},
@@ -795,7 +795,7 @@ def _eval_step(state, batch, model):
         batch_size, seq_len = batch["inputs"].shape
         segment_pos = jnp.broadcast_to(jnp.arange(seq_len), (batch_size, seq_len))
         logits = model.apply(
-            {"params": p},
+            {"params": p, 'cache': {}},
             batch["inputs"],
             segment_pos,
             mutable=['cache'],
