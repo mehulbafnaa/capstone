@@ -344,12 +344,41 @@ def apply_grads(state):
 # ------------------------------------------------------------------
 # Sharding helpers
 # ------------------------------------------------------------------
+# def safe_fsdp_sharding(pytree, axis_name, num_devices):
+#     """Shard only tensors whose axis-0 length divisible by num_devices."""
+#     def spec(_, x):
+#         if x.ndim >= 1 and x.shape[0] >= num_devices and x.shape[0] % num_devices == 0:
+#             return PartitionSpec(axis_name, *([None] * (x.ndim - 1)))
+#         return PartitionSpec()
+#     return jtu.tree_map_with_path(spec, pytree)
+
+
 def safe_fsdp_sharding(pytree, axis_name, num_devices):
-    """Shard only tensors whose axis-0 length divisible by num_devices."""
-    def spec(_, x):
+    """
+    Shards parameters using FSDP, but explicitly replicates the entire
+    'embedder' module to avoid shape confusion bugs.
+    """
+    def spec(path, x):
+        # Check if the current parameter is part of the 'embedder' module
+        is_in_embedder_module = any(
+            p.key == 'embedder'
+            for p in path
+            if isinstance(p, jax.tree_util.DictKey)
+        )
+        
+        if is_in_embedder_module:
+            # Replicate everything within the embedder module
+            if jax.process_index() == 0:
+                print(f"--> Replicating parameter in 'embedder': {[p.key for p in path]}")
+            return PartitionSpec() # An empty PartitionSpec means "replicate"
+
+        # Apply standard FSDP sharding to all other parameters
         if x.ndim >= 1 and x.shape[0] >= num_devices and x.shape[0] % num_devices == 0:
             return PartitionSpec(axis_name, *([None] * (x.ndim - 1)))
+        
+        # Replicate any other parameters that don't meet sharding criteria
         return PartitionSpec()
+        
     return jtu.tree_map_with_path(spec, pytree)
 
 def print_tensor_stats(pytree, header):
