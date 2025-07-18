@@ -421,7 +421,8 @@ def loss_fn(logits, batch):
 
 
 def _train_step(state, batch, rng, model):
-    dropout_rng = jax.random.fold_in(rng, state.step)
+    # dropout_rng = jax.random.fold_in(rng, state.step)
+    dropout_rng = jax.random.fold_in(rng, jax.lax.axis_index(cfg.data_axis))
 
     def _loss(p):
         batch_size, seq_len = batch["inputs"].shape
