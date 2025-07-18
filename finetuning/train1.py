@@ -238,6 +238,9 @@
 #     main()
 
 
+
+
+
 #!/usr/bin/env python3
 """
 Fine-tune RecurrentGemma-2B on FrenzyMath/Herald_proofs
@@ -480,29 +483,29 @@ def main(argv):
 
     model, params, pspecs = load_and_shard_model(cfg, mesh)
 
-        # ------------------------------------------------------------------
+    #     ------------------------------------------------------------------
     # Build an empty, hashable cache
     # ------------------------------------------------------------------
-    # with jax.default_device(jax.devices()[0]):
-    #     empty_cache = flax.core.freeze(
-    #         model.init_cache(batch_size=cfg.global_batch_size, dtype=cfg.weight_dtype,
-    #         )
-    #     )
+    with jax.default_device(jax.devices("tpu")[0]):
+        empty_cache = flax.core.freeze(
+            model.init_cache(batch_size=cfg.global_batch_size, dtype=cfg.weight_dtype,
+            )
+        )
 
 
-    # ------------------------------------------------------------------
-# Build an empty cache *inside* the mesh so every host can see it
-    # ------------------------------------------------------------------
-    with mesh:
-        empty_cache = jax.jit(
-            lambda: flax.core.freeze(
-                model.init_cache(
-                    batch_size=cfg.global_batch_size,
-                    dtype=cfg.weight_dtype,
-                )
-            ),
-            device=jax.devices("tpu")[0],   # build on CPU
-        )()
+#     # ------------------------------------------------------------------
+# # Build an empty cache *inside* the mesh so every host can see it
+#     # ------------------------------------------------------------------
+#     with mesh:
+#         empty_cache = jax.jit(
+#             lambda: flax.core.freeze(
+#                 model.init_cache(
+#                     batch_size=cfg.global_batch_size,
+#                     dtype=cfg.weight_dtype,
+#                 )
+#             ),
+#             device=jax.devices("tpu")[0],   # build on CPU
+#         )()
 
     opt = optax.MultiSteps(
         optax.chain(
