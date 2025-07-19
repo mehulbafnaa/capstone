@@ -600,8 +600,8 @@ Fine-tune RecurrentGemma-2B on FrenzyMath/Herald_proofs
 """
 
 import os
-# os.environ["JAX_PLATFORMS"] = "tpu"
-# os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+os.environ["JAX_PLATFORMS"] = "tpu"
+os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import flax.core.frozen_dict as frozen_dict
@@ -652,7 +652,7 @@ def get_config():
     c.num_epochs = 3
     c.global_batch_size = 32
     c.grad_clip_norm = 1.0
-    c.grad_accum_steps = 1
+    c.grad_accum_steps = 8
     c.eval_steps = 250
     c.eval_batch_size = 32
     c.dataset_name = "FrenzyMath/Herald_proofs"
