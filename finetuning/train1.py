@@ -652,7 +652,7 @@ def get_config():
     c.num_epochs = 3
     c.global_batch_size = 32
     c.grad_clip_norm = 1.0
-    c.grad_accum_steps = 8
+    c.grad_accum_steps = 1
     c.eval_steps = 250
     c.eval_batch_size = 32
     c.dataset_name = "FrenzyMath/Herald_proofs"
