@@ -21,6 +21,7 @@ dependencies = [
   "tensorflow-datasets>=4.9.9",
   "torch>=2.7.1",
   "ml-collections>=1.1.0",
+  "jax[tpu]>=0.6.1",
 ]
 
 [tool.setuptools]
