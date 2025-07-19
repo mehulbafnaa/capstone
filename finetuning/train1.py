@@ -387,6 +387,7 @@ frozen_dict.FrozenDict.__repr__ = _safe_repr
 
 import numpy as np
 import flax.core
+import flax.linen as nn # CORRECTED: Added missing import for flax.linen
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, PartitionSpec
