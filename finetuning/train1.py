@@ -589,6 +589,10 @@
 # if __name__ == "__main__":
 #     app.run(main)
 
+
+
+
+
 #!/usr/bin/env python3
 """
 Fine-tune RecurrentGemma-2B on FrenzyMath/Herald_proofs
@@ -785,36 +789,87 @@ class TrainState(train_state.TrainState):
 # ------------------------------------------------------------------
 
 
+# def make_sharded_forward_fn(model, mesh, data_axis):
+#     """
+#     Return a jit-able, TPU-sharded forward+loss function for RecurrentGemma.
+#     Ensures logits and targets have identical length.
+#     """
+
+#     def _forward(tokens, positions, params):
+#         # tokens : [B, L]   (already padded to max_seq_len)
+#         # positions : [B, L]
+
+#         # 1. Build inputs and targets
+#         inputs  = tokens[:, :-1]          # [B, L-1]
+#         targets = tokens[:, 1:]           # [B, L-1]
+
+#         # 2. Forward pass
+#         logits, _ = model.apply(
+#             {"params": params},
+#             tokens=inputs,
+#             segment_pos=positions[:, :-1],  # [B, L-1]
+#             cache=None,
+#         )                                  # logits: [B, L-1, V]
+
+#         # 3. Flatten for optax
+#         logits_flat = logits.reshape(-1, logits.shape[-1])  # [(B*(L-1)), V]
+#         targets_flat = targets.reshape(-1)                  # [(B*(L-1))]
+
+#         # 4. Mask out padding tokens
+#         mask = targets_flat != 0
+
+#         # 5. Cross-entropy loss
+#         loss = optax.softmax_cross_entropy_with_integer_labels(
+#             logits_flat.astype(jnp.float32),
+#             targets_flat
+#         )
+#         loss = jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
+#         return loss
+
+#     # Shard the helper across the data axis
+#     sharded = shard_map(
+#         _forward,
+#         mesh=mesh,
+#         in_specs=(
+#             PartitionSpec(data_axis),  # tokens
+#             PartitionSpec(data_axis),  # positions
+#             PartitionSpec(),           # params (already sharded)
+#         ),
+#         out_specs=PartitionSpec(),     # scalar loss per shard
+#         check_rep=False,
+#     )
+#     return sharded
+
+
+
 def make_sharded_forward_fn(model, mesh, data_axis):
     """
     Return a jit-able, TPU-sharded forward+loss function for RecurrentGemma.
-    Ensures logits and targets have identical length.
+    Ensures the model receives a 2048-length input.
     """
-
     def _forward(tokens, positions, params):
-        # tokens : [B, L]   (already padded to max_seq_len)
-        # positions : [B, L]
+        # tokens have shape [B, 2048]
 
-        # 1. Build inputs and targets
-        inputs  = tokens[:, :-1]          # [B, L-1]
-        targets = tokens[:, 1:]           # [B, L-1]
-
-        # 2. Forward pass
+        # 1. Forward pass with the full 2048-length sequence
         logits, _ = model.apply(
             {"params": params},
-            tokens=inputs,
-            segment_pos=positions[:, :-1],  # [B, L-1]
+            tokens=tokens,          # Pass full [B, 2048] tensor
+            segment_pos=positions,  # Pass full [B, 2048] tensor
             cache=None,
-        )                                  # logits: [B, L-1, V]
+        )  # Logits will have shape [B, 2048, V]
+
+        # 2. Create targets and align logits for loss calculation
+        # The logit at index `i` is the prediction for token `i+1`.
+        # We drop the last logit, as it predicts a token outside our sequence.
+        relevant_logits = logits[:, :-1, :]  # Shape: [B, 2047, V]
+        targets = tokens[:, 1:]              # Shape: [B, 2047]
 
         # 3. Flatten for optax
-        logits_flat = logits.reshape(-1, logits.shape[-1])  # [(B*(L-1)), V]
-        targets_flat = targets.reshape(-1)                  # [(B*(L-1))]
+        logits_flat = relevant_logits.reshape(-1, relevant_logits.shape[-1])
+        targets_flat = targets.reshape(-1)
 
-        # 4. Mask out padding tokens
+        # 4. Mask out padding and calculate loss
         mask = targets_flat != 0
-
-        # 5. Cross-entropy loss
         loss = optax.softmax_cross_entropy_with_integer_labels(
             logits_flat.astype(jnp.float32),
             targets_flat
@@ -822,7 +877,7 @@ def make_sharded_forward_fn(model, mesh, data_axis):
         loss = jnp.sum(loss * mask) / jnp.maximum(mask.sum(), 1e-8)
         return loss
 
-    # Shard the helper across the data axis
+    # The shard_map wrapper remains the same
     sharded = shard_map(
         _forward,
         mesh=mesh,
@@ -835,6 +890,7 @@ def make_sharded_forward_fn(model, mesh, data_axis):
         check_rep=False,
     )
     return sharded
+
 
 @partial(
     jax.jit,
@@ -857,7 +913,7 @@ def train_step(
         positions = jnp.broadcast_to(
             jnp.arange(batch["inputs"].shape[1])[None, :], batch["inputs"].shape
         )
-        return fwd(batch["inputs"][:, :-1], positions[:, :-1], p)
+        return fwd(batch["inputs"], positions, p)
 
     loss, grads = jax.value_and_grad(_loss)(params)
     updates, opt_state = optimizer.update(grads, opt_state, params)
