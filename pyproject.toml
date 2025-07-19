@@ -15,7 +15,6 @@ dependencies = [
   "seaborn",
   "recurrentgemma",
   "flax",
-  "jax[tpu]==0.4.25",
   "pydeps>=3.0.1",
   "ruff>=0.11.13",
   "tensorflow>=2.19.0",

@@ -131,7 +131,6 @@ source = { editable = "." }
 dependencies = [
     { name = "datasets" },
     { name = "flax" },
-    { name = "jax", extra = ["tpu"] },
     { name = "matplotlib" },
     { name = "ml-collections" },
     { name = "pandas" },
@@ -148,7 +147,6 @@ dependencies = [
 requires-dist = [
     { name = "datasets" },
     { name = "flax" },
-    { name = "jax", extras = ["tpu"] },
     { name = "matplotlib" },
     { name = "ml-collections", specifier = ">=1.1.0" },
     { name = "pandas" },
@@ -699,13 +697,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/dc/89/99805cd801919b4535e023bfe2de651f5a3ec4f5846a867cbc08006db455/jax-0.6.1-py3-none-any.whl", hash = "sha256:69a4e4506caa5466702bdfd0d7a13d1f9b7281d473885721100a3087fcabf8f9", size = 2394773, upload-time = "2025-05-21T18:10:42.835Z" },
 ]
 
-[package.optional-dependencies]
-tpu = [
-    { name = "jaxlib" },
-    { name = "libtpu" },
-    { name = "requests" },
-]
-
 [[package]]
 name = "jaxlib"
 version = "0.6.1"
@@ -837,14 +828,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/2d/c2/de1db8c6d413597076a4259cea409b83459b2db997c003578affdd32bf66/libclang-18.1.1-py2.py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:69f8eb8f65c279e765ffd28aaa7e9e364c776c17618af8bff22a8df58677ff4f", size = 24921494, upload-time = "2024-03-17T16:14:20.132Z" },
     { url = "https://files.pythonhosted.org/packages/0b/2d/3f480b1e1d31eb3d6de5e3ef641954e5c67430d5ac93b7fa7e07589576c7/libclang-18.1.1-py2.py3-none-win_amd64.whl", hash = "sha256:4dd2d3b82fab35e2bf9ca717d7b63ac990a3519c7e312f19fa8e86dcc712f7fb", size = 26415083, upload-time = "2024-03-17T16:42:21.703Z" },
     { url = "https://files.pythonhosted.org/packages/71/cf/e01dc4cc79779cd82d77888a88ae2fa424d93b445ad4f6c02bfc18335b70/libclang-18.1.1-py2.py3-none-win_arm64.whl", hash = "sha256:3f0e1f49f04d3cd198985fea0511576b0aee16f9ff0e0f0cad7f9c57ec3c20e8", size = 22361112, upload-time = "2024-03-17T16:42:59.565Z" },
-]
-
-[[package]]
-name = "libtpu"
-version = "0.0.15"
-source = { registry = "https://pypi.org/simple" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/ed/d79689097c768bca8efb5cb06a30dd26fce4ac93ab1011065dfd407e8b57/libtpu-0.0.15-py3-none-manylinux_2_31_x86_64.whl", hash = "sha256:aa132110d2adc7cc5f10a80bab7917212b3ddfa9c7633df5595205b035d8c2e7", size = 133593639, upload-time = "2025-05-15T16:26:13.248Z" },
 ]
 
 [[package]]
