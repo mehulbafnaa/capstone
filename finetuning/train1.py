@@ -926,7 +926,7 @@ def eval_step(model, params, batch, *, mesh, data_axis):
     positions = jnp.broadcast_to(
         jnp.arange(batch["inputs"].shape[1])[None, :], batch["inputs"].shape
     )
-    loss = fwd(batch, positions, params)
+    loss = fwd(batch["inputs"], positions, params)
     return {"loss": loss}
 
 # ------------------------------------------------------------------
