@@ -600,8 +600,8 @@ Fine-tune RecurrentGemma-2B on FrenzyMath/Herald_proofs
 """
 
 import os
-os.environ["JAX_PLATFORMS"] = "tpu"
-os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+# os.environ["JAX_PLATFORMS"] = "tpu"
+# os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import flax.core.frozen_dict as frozen_dict
