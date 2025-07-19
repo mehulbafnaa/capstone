@@ -1162,9 +1162,9 @@ def main(argv):
     model = SimpleModel(features=output_features)
     key = jax.random.PRNGKey(0)
     
-    # Initialize parameters on the CPU first.
-    with jax.default_device(jax.devices("cpu")[0]):
-        params = model.init(key, jnp.ones((batch_size, input_features)))['params']
+    # Initialize parameters on the default device, without forcing it to CPU.
+    # The subsequent jax.device_put will handle sharding correctly.
+    params = model.init(key, jnp.ones((batch_size, input_features)))['params']
     
     optimizer = optax.adam(learning_rate)
     opt_state = optimizer.init(params)
